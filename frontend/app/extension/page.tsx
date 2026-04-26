@@ -226,23 +226,28 @@ export default function ExtensionPage() {
           {steps.map((step) => (
             <div
               key={step.n}
-              className="flex gap-5 p-5 rounded-xl border-2 border-[#1a1a1a]"
+              className="flex flex-col sm:flex-row gap-5 p-5 rounded-xl border-2 border-[#1a1a1a]"
               style={{ background: '#fffefb', boxShadow: '4px 4px 0 #1a1a1a' }}
             >
-              {/* Step number */}
-              <div
-                className="h-9 w-9 rounded-full border-2 border-[#1a1a1a] bg-[#4f46e5] flex items-center justify-center flex-shrink-0 text-white font-bold text-[13px]"
-                style={{ boxShadow: '2px 2px 0 #1a1a1a' }}
-              >
-                {step.n}
+              {/* Left: step number + text */}
+              <div className="flex gap-4 sm:w-[52%] flex-shrink-0">
+                <div
+                  className="h-9 w-9 rounded-full border-2 border-[#1a1a1a] bg-[#4f46e5] flex items-center justify-center flex-shrink-0 text-white font-bold text-[13px]"
+                  style={{ boxShadow: '2px 2px 0 #1a1a1a' }}
+                >
+                  {step.n}
+                </div>
+                <div>
+                  <h3 className="text-[13px] font-bold mb-2">{step.title}</h3>
+                  <p className="text-[12px] text-[#5a5a5a] leading-relaxed">{step.desc}</p>
+                </div>
               </div>
-              <div className="flex-1">
-                <h3 className="text-[13px] font-bold mb-1">{step.title}</h3>
-                <p className="text-[12px] text-[#5a5a5a] leading-relaxed mb-4">{step.desc}</p>
-                {/* Screenshot placeholder */}
+
+              {/* Right: screenshot placeholder */}
+              <div className="flex-1 flex items-center justify-center">
                 <div
                   className="w-full rounded-xl border-2 border-dashed border-[#d1d5db] flex items-center justify-center text-[11px] text-[#9ca3af]"
-                  style={{ aspectRatio: '4/3', background: '#f5f0e8', maxHeight: 160 }}
+                  style={{ aspectRatio: '16/9', background: '#f5f0e8' }}
                 >
                   [Screenshot: Step {step.n}]
                 </div>
