@@ -332,36 +332,262 @@ dom.whitelistSave.addEventListener('click', () => {
 });
 
 // ── Scan page button ───────────────────────────────────────────────────────
+// Strategy: inject a self-contained side-panel renderer directly into the page.
+// This bypasses the content script entirely so the side panel ALWAYS opens
+// regardless of timing, CSP, or whether the content script was already loaded.
 dom.btnScanPage.addEventListener('click', async () => {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (!tab || !tab.id) return;
 
-  // Restricted pages where content scripts can't run
-  const restricted = !tab.url || /^(chrome|edge|brave|about|chrome-extension|file):/i.test(tab.url);
+  // Restricted pages where we cannot inject scripts at all
+  const restricted = !tab.url || /^(chrome|edge|brave|about|chrome-extension|moz-extension|file|view-source):/i.test(tab.url);
   if (restricted) {
     chrome.tabs.create({ url: `https://phishingo-zk3c.vercel.app/?url=${encodeURIComponent(tab.url || '')}` });
     return;
   }
 
-  // Try sending message — if content script isn't loaded, force-inject and retry
-  const trySend = () => new Promise(resolve => {
-    chrome.tabs.sendMessage(tab.id, { action: 'startPageScan' }, () => {
-      resolve(!chrome.runtime.lastError);
-    });
-  });
+  const backend = await getBackendUrl();
 
-  let ok = await trySend();
-  if (!ok) {
-    try {
-      await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['content/universal.js'] });
-      await new Promise(r => setTimeout(r, 100));
-      ok = await trySend();
-    } catch { /* injection failed, restricted page */ }
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId: tab.id, allFrames: false },
+      world:  'ISOLATED',
+      args:   [backend, tab.url || location.href],
+      func:   injectSidePanelAndScan,
+    });
+  } catch (err) {
+    // Page won't allow injection (e.g. Chrome Web Store, some Google services)
+    chrome.tabs.create({ url: `https://phishingo-zk3c.vercel.app/?url=${encodeURIComponent(tab.url || '')}` });
+    return;
   }
 
-  // Close popup so the side panel is visible on the page
   window.close();
 });
+
+/**
+ * Self-contained side-panel renderer + scanner.
+ * Runs in the page's isolated world so it can call chrome.runtime / fetch.
+ * Uses Shadow DOM so site CSS can't break it and our CSS can't leak.
+ */
+function injectSidePanelAndScan(backendUrl, tabUrl) {
+  const HOST_ID = 'pfp-panel-host';
+  const escHtml = (s) => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+
+  // Remove any existing panel
+  document.getElementById(HOST_ID)?.remove();
+
+  const host = document.createElement('div');
+  host.id = HOST_ID;
+  Object.assign(host.style, {
+    all: 'initial', position: 'fixed', top: '0', right: '0',
+    width: '380px', height: '100vh', zIndex: '2147483647', display: 'block',
+  });
+  const shadow = host.attachShadow({ mode: 'closed' });
+  (document.documentElement || document.body || document).appendChild(host);
+
+  const css = `
+    *{box-sizing:border-box;margin:0;padding:0;font-family:'Space Mono',ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px}
+    .panel{background:#fff;border-left:2px solid #111;height:100vh;display:flex;flex-direction:column;
+           box-shadow:-4px 0 0 #111;animation:slide .2s ease;color:#111}
+    @keyframes slide{from{transform:translateX(380px)}to{transform:translateX(0)}}
+    .hdr{display:flex;align-items:center;justify-content:space-between;padding:14px 16px;
+         border-bottom:2px solid #111;background:#fff;flex-shrink:0}
+    .hdr-left{display:flex;align-items:center;gap:8px;font-weight:700;font-size:13px}
+    .shield{width:28px;height:28px;border-radius:8px;background:#1a56db;border:2px solid #111;
+            display:flex;align-items:center;justify-content:center;color:#fff;font-weight:700;font-size:14px}
+    .close{background:none;border:none;font-size:18px;cursor:pointer;color:#5a5a5a;line-height:1;padding:4px}
+    .body{flex:1;overflow-y:auto;padding:14px}
+    .body.center{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;padding:24px}
+    .verdict-card{border:2px solid #111;border-radius:12px;padding:14px;margin-bottom:12px;box-shadow:3px 3px 0 #111}
+    .v-label{font-size:10px;color:#5a5a5a;margin-bottom:6px;text-transform:uppercase;letter-spacing:.5px}
+    .v-badge{display:inline-block;padding:3px 10px;border-radius:6px;font-weight:700;font-size:12px;margin-bottom:4px;border:1.5px solid currentColor}
+    .score-big{font-size:28px;font-weight:700;margin:4px 0}
+    .section{margin-bottom:14px}
+    .sec-title{font-weight:700;color:#374151;margin-bottom:6px;font-size:10px;text-transform:uppercase;letter-spacing:.5px}
+    .item{background:#f9fafb;border:1.5px solid #e5e7eb;border-radius:8px;padding:6px 10px;margin-bottom:4px;font-size:11px;color:#374151;word-break:break-all}
+    .item.danger{border-color:#fca5a5;background:#fff1f1;color:#dc2626}
+    .item.warn{border-color:#fde68a;background:#fffbee;color:#92400e}
+    .flag{display:flex;align-items:flex-start;gap:6px;margin-bottom:5px;font-size:11px;color:#374151;line-height:1.4}
+    .flag-dot{width:6px;height:6px;border-radius:50%;background:#dc2626;flex-shrink:0;margin-top:5px}
+    .footer{padding:12px 16px;border-top:2px solid #111;background:#fff;flex-shrink:0}
+    .open-btn{display:block;width:100%;padding:10px;background:#1a56db;color:#fff;border:2px solid #111;
+              border-radius:8px;box-shadow:2px 2px 0 #111;font-weight:700;cursor:pointer;text-align:center;
+              font-family:inherit;font-size:12px}
+    .dot{width:10px;height:10px;border-radius:50%;background:#1a56db;animation:pulse 1s infinite;display:inline-block;margin:0 3px}
+    .dot:nth-child(2){animation-delay:.2s}.dot:nth-child(3){animation-delay:.4s}
+    @keyframes pulse{0%,100%{opacity:.4}50%{opacity:1}}
+    .meta-row{display:flex;justify-content:space-between;font-size:10px;color:#5a5a5a;margin-top:8px}
+    .domain-line{font-size:10px;color:#5a5a5a;word-break:break-all;margin-top:4px}
+  `;
+  const styleEl = document.createElement('style');
+  styleEl.textContent = css;
+  shadow.appendChild(styleEl);
+
+  const wrap = document.createElement('div');
+  shadow.appendChild(wrap);
+
+  const renderLoading = () => {
+    wrap.innerHTML = `
+      <div class="panel">
+        <div class="hdr">
+          <div class="hdr-left"><div class="shield">P</div>PhishFilter Pro</div>
+          <button class="close" id="pfp-close">✕</button>
+        </div>
+        <div class="body center">
+          <div><span class="dot"></span><span class="dot"></span><span class="dot"></span></div>
+          <div style="font-size:12px;color:#5a5a5a;text-align:center;line-height:1.6">
+            Scanning entire page…<br>
+            <span style="font-size:10px;color:#9ca3af">Analyzing all links, forms & content with AI</span>
+          </div>
+          <div class="domain-line">${escHtml(location.hostname)}</div>
+        </div>
+      </div>
+    `;
+    shadow.getElementById('pfp-close').onclick = () => host.remove();
+  };
+
+  const renderResult = (r) => {
+    const verdict = r?.verdict || 'UNKNOWN';
+    const score   = r?.risk_score ?? 0;
+    const summary = r?.summary || r?.llm?.summary || '';
+    const llmFlags = r?.llm?.red_flags || r?.red_flags || [];
+    const links = r?.links || {};
+    const dangerLinks = links.dangerous || [];
+    const suspLinks   = links.suspicious || [];
+    const linksTotal  = links.total ?? (dangerLinks.length + suspLinks.length + (links.safe?.length || 0));
+    const pwordFields = r?.forms?.password_fields ?? 0;
+
+    const vColor =
+      verdict === 'DANGEROUS'  ? '#dc2626' :
+      verdict === 'SUSPICIOUS' ? '#d97706' :
+      verdict === 'SAFE'       ? '#16a34a' : '#6b7280';
+    const bgColor =
+      verdict === 'DANGEROUS'  ? '#fff1f1' :
+      verdict === 'SUSPICIOUS' ? '#fffbee' :
+      verdict === 'SAFE'       ? '#f0fff6' : '#f9fafb';
+
+    const threatCount = dangerLinks.length + suspLinks.length + pwordFields + llmFlags.length;
+
+    wrap.innerHTML = `
+      <div class="panel">
+        <div class="hdr">
+          <div class="hdr-left"><div class="shield">P</div>PhishFilter Pro</div>
+          <button class="close" id="pfp-close">✕</button>
+        </div>
+        <div class="body">
+          <div class="verdict-card" style="background:${bgColor}">
+            <div class="v-label">Full page scan result</div>
+            <span class="v-badge" style="color:${vColor}">${verdict}</span>
+            <div class="score-big" style="color:${vColor}">${score}<span style="font-size:13px;color:#6b7280">/100</span></div>
+            ${summary ? `<div style="font-size:11px;color:#374151;margin-top:6px;line-height:1.5">${escHtml(summary)}</div>` : ''}
+            <div class="domain-line">${escHtml(location.hostname)}</div>
+          </div>
+
+          <div class="section">
+            <div class="sec-title">Scan summary</div>
+            <div class="item">Links analyzed: ${linksTotal || 'all on page'}</div>
+            <div class="item">Form fields: ${pwordFields > 0 ? `${pwordFields} sensitive` : 'none flagged'}</div>
+            <div class="item">AI red flags: ${llmFlags.length}</div>
+          </div>
+
+          ${dangerLinks.length + suspLinks.length > 0 ? `
+            <div class="section">
+              <div class="sec-title">Suspicious links (${dangerLinks.length + suspLinks.length})</div>
+              ${dangerLinks.slice(0,8).map(u => `<div class="item danger">⛔ ${escHtml((u.url || u).slice(0,80))}</div>`).join('')}
+              ${suspLinks.slice(0,8).map(u  => `<div class="item warn">⚠ ${escHtml((u.url || u).slice(0,80))}</div>`).join('')}
+            </div>
+          ` : ''}
+
+          ${llmFlags.length > 0 ? `
+            <div class="section">
+              <div class="sec-title">AI red flags</div>
+              ${llmFlags.slice(0,6).map(f => {
+                const t = typeof f === 'string' ? f : (f.description || f.flag || '');
+                return `<div class="flag"><div class="flag-dot"></div><div>${escHtml(t)}</div></div>`;
+              }).join('')}
+            </div>
+          ` : ''}
+
+          ${threatCount === 0 ? `
+            <div style="text-align:center;padding:24px 0">
+              <div style="width:60px;height:60px;margin:0 auto 12px;border-radius:14px;background:#f0fff6;border:2px solid #16a34a;display:flex;align-items:center;justify-content:center;color:#16a34a;font-size:28px;font-weight:700">✓</div>
+              <div style="color:#16a34a;font-weight:700;font-size:14px">No threats detected</div>
+              <div style="color:#6b7280;font-size:11px;margin-top:6px">This page appears safe to use</div>
+            </div>
+          ` : ''}
+        </div>
+        <div class="footer">
+          <button class="open-btn" id="pfp-open">Open full report ↗</button>
+        </div>
+      </div>
+    `;
+    shadow.getElementById('pfp-close').onclick = () => host.remove();
+    shadow.getElementById('pfp-open').onclick  = () => {
+      const id = r?.job_id;
+      window.open(id ? `https://phishingo-zk3c.vercel.app/analyze/${id}` : 'https://phishingo-zk3c.vercel.app', '_blank');
+    };
+  };
+
+  const renderError = (msg) => {
+    wrap.innerHTML = `
+      <div class="panel">
+        <div class="hdr">
+          <div class="hdr-left"><div class="shield">P</div>PhishFilter Pro</div>
+          <button class="close" id="pfp-close">✕</button>
+        </div>
+        <div class="body center">
+          <div style="width:48px;height:48px;border-radius:12px;background:#fef2f2;border:2px solid #dc2626;display:flex;align-items:center;justify-content:center;color:#dc2626;font-size:24px;font-weight:700">!</div>
+          <div style="font-size:13px;font-weight:700;color:#1a1a1a">Couldn't reach scanner</div>
+          <div style="font-size:11px;color:#5a5a5a;text-align:center;line-height:1.5">${escHtml(msg)}</div>
+          <button id="pfp-retry" style="margin-top:8px;padding:8px 16px;background:#1a56db;color:#fff;border:2px solid #111;border-radius:8px;font-family:inherit;font-size:12px;font-weight:700;cursor:pointer">Retry</button>
+        </div>
+      </div>
+    `;
+    shadow.getElementById('pfp-close').onclick = () => host.remove();
+    shadow.getElementById('pfp-retry').onclick = runScan;
+  };
+
+  // Extract and POST page data
+  const runScan = async () => {
+    renderLoading();
+
+    const links = [...document.querySelectorAll('a[href]')]
+      .map(a => a.href)
+      .filter(h => h && !h.startsWith('#') && !h.startsWith('javascript:') && !h.startsWith('mailto:'));
+    const forms = [...document.querySelectorAll('input')].slice(0, 50).map(i => ({
+      type: i.type, name: i.name, placeholder: i.placeholder, id: i.id,
+    }));
+    const images = [...document.querySelectorAll('img[src]')].slice(0, 20).map(i => ({ src: i.src, alt: i.alt }));
+
+    const payload = {
+      url:    tabUrl || location.href,
+      title:  (document.title || '').slice(0, 200),
+      text:   (document.body?.innerText || document.documentElement?.innerText || '').slice(0, 5000),
+      links:  [...new Set(links)].slice(0, 50),
+      forms,
+      images,
+    };
+
+    try {
+      const ctrl = new AbortController();
+      const timeoutId = setTimeout(() => ctrl.abort(), 30000);
+      const res = await fetch(`${backendUrl.replace(/\/$/, '')}/api/page-scan`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+        signal: ctrl.signal,
+      });
+      clearTimeout(timeoutId);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      renderResult(data);
+    } catch (err) {
+      renderError(err?.name === 'AbortError' ? 'Request timed out (30s)' : (err?.message || 'Network error'));
+    }
+  };
+
+  runScan();
+}
 
 // ── Clipboard scan ─────────────────────────────────────────────────────────
 dom.btnClipboard.addEventListener('click', async () => {
