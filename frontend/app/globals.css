@@ -1,0 +1,130 @@
+@import url('https://fonts.googleapis.com/css2?family=Space+Mono:ital,wght@0,400;0,700;1,400;1,700&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ── Design tokens ─────────────────────────────────────────── */
+:root {
+  --bg:           #f5f0e8;
+  --surface:      #fffefb;
+  --primary:      #4f46e5;
+  --primary-dark: #3730a3;
+  --text:         #1a1a1a;
+  --muted:        #5a5a5a;
+  --border:       #1a1a1a;
+
+  --clay-red:    #ffb3b3;
+  --clay-green:  #b3f0c8;
+  --clay-yellow: #ffe9a0;
+  --clay-blue:   #b3c8ff;
+  --clay-purple: #d4b3ff;
+  --clay-orange: #ffd0a0;
+}
+
+/* ── Reset ─────────────────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; }
+
+html, body {
+  margin: 0; padding: 0;
+  min-height: 100vh;
+  background: var(--bg);
+  color: var(--text);
+  font-family: 'Space Mono', 'Courier New', monospace;
+  -webkit-font-smoothing: antialiased;
+}
+
+a { color: inherit; text-decoration: none; }
+
+/* ── Clay morphism + neo-brutalism fusion utilities ────────── */
+
+/* Standard clay card: soft puff + bold offset shadow */
+.clay {
+  background: var(--surface);
+  border: 2px solid var(--border);
+  border-radius: 16px;
+  box-shadow:
+    4px 4px 0px var(--border),
+    inset 0 1px 0 rgba(255,255,255,0.9),
+    inset 0 -2px 0 rgba(0,0,0,0.06);
+}
+
+/* Pressed-in clay for interactive elements */
+.clay:active,
+.clay-press:active {
+  box-shadow:
+    1px 1px 0px var(--border),
+    inset 0 2px 4px rgba(0,0,0,0.08);
+  transform: translate(2px, 2px);
+}
+
+/* Tinted clay cards */
+.clay-red    { background: #fff1f1; }
+.clay-green  { background: #f0fff6; }
+.clay-yellow { background: #fffbee; }
+.clay-blue   { background: #eff4ff; }
+
+/* Badge clay: rounder, puffier */
+.clay-badge {
+  border: 2px solid var(--border);
+  border-radius: 999px;
+  box-shadow:
+    2px 2px 0 var(--border),
+    inset 0 1px 0 rgba(255,255,255,0.8);
+  font-family: 'Space Mono', monospace;
+  font-weight: 700;
+}
+
+/* Button clay */
+.clay-btn {
+  border: 2px solid var(--border);
+  border-radius: 12px;
+  font-family: 'Space Mono', monospace;
+  font-weight: 700;
+  cursor: pointer;
+  transition: transform 80ms, box-shadow 80ms;
+  box-shadow:
+    4px 4px 0 var(--border),
+    inset 0 1px 0 rgba(255,255,255,0.7);
+}
+.clay-btn:hover { filter: brightness(0.96); }
+.clay-btn:active {
+  transform: translate(2px, 2px);
+  box-shadow:
+    1px 1px 0 var(--border),
+    inset 0 2px 4px rgba(0,0,0,0.1);
+}
+.clay-btn:disabled { opacity: 0.45; pointer-events: none; }
+
+/* Inputs */
+.clay-input {
+  border: 2px solid var(--border);
+  border-radius: 12px;
+  font-family: 'Space Mono', monospace;
+  background: var(--surface);
+  box-shadow:
+    inset 0 2px 4px rgba(0,0,0,0.05),
+    inset 0 1px 0 rgba(255,255,255,0.8);
+  outline: none;
+  transition: box-shadow 100ms;
+}
+.clay-input:focus {
+  box-shadow:
+    0 0 0 3px rgba(79,70,229,0.18),
+    inset 0 2px 4px rgba(0,0,0,0.05);
+}
+
+/* Monospace evidence blocks */
+.mono-evidence {
+  font-family: 'Space Mono', monospace;
+}
+
+/* Responsive container helper */
+.page-wrap {
+  width: 100%;
+  max-width: 680px;
+  margin-left: auto;
+  margin-right: auto;
+  padding-left: 1rem;
+  padding-right: 1rem;
+}

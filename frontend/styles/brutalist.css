@@ -1,0 +1,102 @@
+/* Extra brutalist utility classes not covered by Tailwind */
+
+/* Engine card expansion */
+.engine-card { transition: border-color 0.15s; }
+.engine-card.idle    { border-color: #5A5A5A; }
+.engine-card.running { border-color: #FFB800; }
+.engine-card.done    { border-color: #00FF41; }
+.engine-card.error   { border-color: #FF0044; }
+
+/* Verdict card score number */
+.score-display {
+  font-size: clamp(64px, 10vw, 96px);
+  font-weight: 800;
+  line-height: 1;
+  letter-spacing: -2px;
+}
+
+/* Red flag row hover */
+.red-flag-row {
+  transition: background 0.08s, color 0.08s;
+  cursor: default;
+}
+.red-flag-row:hover { background: #E8E8E8; color: #0A0A0A; }
+.red-flag-row:hover .flag-tag { background: #0A0A0A; color: #E8E8E8; }
+
+/* Auth badge */
+.auth-badge {
+  border: 2px solid;
+  padding: 12px 20px;
+  text-align: center;
+  min-width: 110px;
+}
+.auth-badge.pass   { border-color: #00FF41; color: #00FF41; }
+.auth-badge.fail   { border-color: #FF0044; color: #FF0044; }
+.auth-badge.none   { border-color: #FFB800; color: #FFB800; }
+.auth-badge.softfail { border-color: #FF8800; color: #FF8800; }
+
+/* LLM model card */
+.model-card {
+  border: 2px solid #5A5A5A;
+  padding: 12px;
+  flex: 1;
+  min-width: 0;
+  transition: border-color 0.15s;
+}
+.model-card.ok      { border-color: #333; }
+.model-card.SAFE    { border-color: rgba(0,255,65,0.4); }
+.model-card.SUSPICIOUS { border-color: rgba(255,184,0,0.4); }
+.model-card.DANGEROUS  { border-color: rgba(255,0,68,0.4); }
+
+/* Redirect chain */
+.chain-link { border-left: 2px solid #5A5A5A; margin-left: 6px; padding-left: 12px; }
+.chain-link.flagged { border-color: #FF0044; }
+.chain-arrow { color: #5A5A5A; margin: 0 4px; font-size: 16px; }
+
+/* Matrix rain (canvas absolutely positioned) */
+.matrix-canvas {
+  position: fixed;
+  top: 0; left: 0;
+  width: 100%; height: 100%;
+  pointer-events: none;
+  opacity: 0.04;
+  z-index: 0;
+}
+
+/* Forensic report grid */
+.meta-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 1px;
+  border: 1px solid #333;
+}
+.meta-grid-cell {
+  padding: 12px;
+  border: 1px solid #333;
+  text-align: center;
+}
+
+/* Loading overlay */
+.loading-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(10,10,10,0.95);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+/* Expand toggle */
+.json-dump {
+  background: #050505;
+  border: 1px solid #222;
+  padding: 10px;
+  font-size: 10px;
+  color: #5A5A5A;
+  overflow: auto;
+  max-height: 300px;
+  word-break: break-all;
+  white-space: pre-wrap;
+}

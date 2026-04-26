@@ -85,9 +85,14 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "http://localhost:3000",
+        "http://localhost:3001",
+        "http://localhost:3002",
+        "http://127.0.0.1:3000",
+        "http://127.0.0.1:3001",
+        "http://127.0.0.1:3002",
         "http://localhost:5173",
     ],
-    allow_origin_regex=r"https://.*\.vercel\.app",
+    allow_origin_regex=r"(https://.*\.vercel\.app)|(http://localhost:\d+)|(http://127\.0\.0\.1:\d+)",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -416,6 +421,73 @@ async def health() -> dict[str, Any]:
         "brands_loaded": len(_BRANDS),
         "openphish_urls": len(threat_engine._openphish_urls),
         "active_jobs": sum(1 for j in _jobs.values() if j["status"] == "running"),
+    }
+
+
+@app.get("/api/dashboard")
+async def dashboard() -> dict[str, Any]:
+    """
+    Lightweight dashboard snapshot for frontend homepage metrics/feed.
+    Values are derived from completed in-memory jobs.
+    """
+    done_jobs = [j for j in _jobs.values() if j.get("status") == "done" and j.get("report")]
+    reports = [j["report"] for j in done_jobs]
+    reports.sort(key=lambda r: float(r.get("timestamp", 0)), reverse=True)
+
+    total_scanned = len(reports)
+    dangerous = sum(1 for r in reports if r.get("score", {}).get("verdict") == "DANGEROUS")
+    accuracy = 0.0 if total_scanned == 0 else round(
+        (sum(1 for r in reports if r.get("score", {}).get("confidence", 0) >= 70) / total_scanned) * 100,
+        1,
+    )
+
+    durations: list[float] = []
+    for job in done_jobs:
+        created_at = float(job.get("created_at", 0))
+        report_ts = float(job.get("report", {}).get("timestamp", 0))
+        if created_at > 0 and report_ts >= created_at:
+            durations.append(report_ts - created_at)
+    avg_scan_time = round(sum(durations) / len(durations), 1) if durations else 0.0
+
+    now = time.time()
+    recent: list[dict[str, Any]] = []
+    for report in reports[:20]:
+        parsed_urls = report.get("parsed", {}).get("urls", [])
+        summary = (
+            parsed_urls[0] if parsed_urls else report.get("parsed", {}).get("body", "")[:80]
+        )
+        summary = summary or "Scan completed"
+        if len(summary) > 90:
+            summary = summary[:90] + "..."
+
+        ts = float(report.get("timestamp", now))
+        minutes = int(max(0, now - ts) // 60)
+        if minutes < 1:
+            time_ago = "just now"
+        elif minutes < 60:
+            time_ago = f"{minutes}m ago"
+        else:
+            hours = minutes // 60
+            time_ago = f"{hours}h ago"
+
+        recent.append(
+            {
+                "job_id": report.get("job_id"),
+                "verdict": report.get("score", {}).get("verdict", "SUSPICIOUS"),
+                "description": summary,
+                "score": report.get("score", {}).get("score", 0),
+                "time_ago": time_ago,
+            }
+        )
+
+    return {
+        "stats": {
+            "emails_scanned": total_scanned,
+            "phishes_caught": dangerous,
+            "accuracy": accuracy,
+            "avg_scan_time_seconds": avg_scan_time,
+        },
+        "recent_scans": recent,
     }
 
 
