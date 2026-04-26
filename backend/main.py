@@ -1226,17 +1226,29 @@ async def safe_mails_test_alert(session_id: str) -> dict:
     verdict = result.get("verdict", "UNKNOWN")
     score   = result.get("risk_score", 0)
     summary = result.get("summary", "")
+    flags   = result.get("red_flags", [])
 
     emoji = "🚨" if verdict == "DANGEROUS" else "⚠️" if verdict == "SUSPICIOUS" else "✅"
+
     msg = (
         f"🧪 *PhishFilter Test Alert*\n\n"
         f"Most recent email in your inbox:\n\n"
-        f"{emoji} *{verdict}* — *{score}/100*\n\n"
-        f"📧 From: `{sender[:60]}`\n"
-        f"📌 Subject: _{subject[:80]}_\n\n"
-        f"{summary[:200]}\n\n"
-        f"_This is a one-time test. Real alerts will only trigger on suspicious mails._"
+        f"{emoji} *Verdict:* {verdict} — *{score}/100*\n\n"
+        f"📧 *From:* `{sender[:90]}`\n"
+        f"📌 *Subject:* _{subject[:140]}_\n\n"
     )
+    if summary:
+        msg += f"📝 *Analysis:*\n{summary[:600].rstrip()}\n\n"
+    if flags:
+        flag_lines = "\n".join(
+            f"• {(f if isinstance(f, str) else f.get('description', '')).strip()[:200]}"
+            for f in flags[:5]
+            if (f if isinstance(f, str) else f.get('description', ''))
+        )
+        if flag_lines:
+            msg += f"🚩 *Red flags:*\n{flag_lines}\n\n"
+    msg += "_This is a one-time test. Real alerts trigger only on suspicious mail._"
+
     ok = _send_telegram_message(chat_id, msg)
     return {"sent": ok, "verdict": verdict, "score": score, "sender": sender[:60]}
 
@@ -1488,26 +1500,25 @@ def _gmail_poll_loop(session_id: str) -> None:
                     sess["alerts_sent"] += 1
                     flags = result.get("red_flags", [])
                     flag_lines = "\n".join(
-                        f"• {f if isinstance(f, str) else f.get('description', '')}"
-                        for f in flags[:3]
+                        f"• {(f if isinstance(f, str) else f.get('description', '')).strip()[:220]}"
+                        for f in flags[:5]
+                        if (f if isinstance(f, str) else f.get('description', ''))
                     )
-                    emoji  = "🚨" if verdict == "DANGEROUS" else "⚠️"
+                    emoji         = "🚨" if verdict == "DANGEROUS" else "⚠️"
                     verdict_label = "DANGEROUS — DO NOT open" if verdict == "DANGEROUS" else "SUSPICIOUS — be careful"
 
                     msg = (
                         f"{emoji} *PhishFilter Pro*\n\n"
                         f"*{verdict_label}*\n\n"
-                        f"📧 From: `{sender[:60]}`\n"
-                        f"📌 Subject: _{subject[:80]}_\n\n"
-                        f"🔴 Risk score: *{score}/100*\n\n"
+                        f"📧 *From:* `{sender[:90]}`\n"
+                        f"📌 *Subject:* _{subject[:140]}_\n\n"
+                        f"🔴 *Risk score:* {score}/100\n\n"
                     )
                     if summary:
-                        # Keep summary short and plain
-                        short = summary[:200].rstrip()
-                        msg += f"📝 _{short}_\n\n"
+                        msg += f"📝 *Analysis:*\n{summary[:700].rstrip()}\n\n"
                     if flag_lines:
-                        msg += f"Red flags:\n{flag_lines}\n\n"
-                    msg += "❌ Do NOT click any links in this email."
+                        msg += f"🚩 *Red flags:*\n{flag_lines}\n\n"
+                    msg += "❌ *Do NOT click any links or reply to this email.*"
 
                     _send_telegram_message(chat_id, msg)
         except Exception as e:
