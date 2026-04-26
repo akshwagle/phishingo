@@ -81,6 +81,9 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# Extra origins from env (comma-separated), e.g. your custom Vercel domain
+_extra_origins = [o.strip() for o in os.getenv("ALLOWED_ORIGINS", "").split(",") if o.strip()]
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -91,6 +94,7 @@ app.add_middleware(
         "http://127.0.0.1:3001",
         "http://127.0.0.1:3002",
         "http://localhost:5173",
+        *_extra_origins,
     ],
     allow_origin_regex=r"(https://.*\.vercel\.app)|(http://localhost:\d+)|(http://127\.0\.0\.1:\d+)",
     allow_credentials=True,
