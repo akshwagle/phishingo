@@ -87,8 +87,19 @@ export default function HomePage() {
     setTab(sample.tab); setError(''); setFile(null)
     if (sample.tab === 'url') { setUrlInput(sample.content); setContent('') }
     else { setContent(sample.content); setUrlInput('') }
-    await new Promise((r) => setTimeout(r, 50))
-    runAnalysis()
+
+    // Call the API directly — avoids stale closure on `tab` state
+    const inputType: 'email' | 'url' | 'text' =
+      sample.tab === 'url' ? 'url' : sample.tab === 'email' ? 'email' : 'text'
+    setLoading(true)
+    try {
+      const report = await analyzeContent({ input_type: inputType, content: sample.content })
+      sessionStorage.setItem(`pfp-report-${report.job_id}`, JSON.stringify(report))
+      router.push(`/analyze/${report.job_id}`)
+    } catch (e: unknown) {
+      setError(`Could not analyze: ${e instanceof Error ? e.message : String(e)}`)
+      setLoading(false)
+    }
   }
 
   const statCards = [
