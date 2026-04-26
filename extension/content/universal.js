@@ -159,73 +159,189 @@
     document.body.style.marginTop = (parseInt(document.body.style.marginTop || '0') + 44) + 'px';
   }
 
-  // ── FEATURE 2: Password sentinel ─────────────────────────────────────────
-  function attachPasswordSentinel(result) {
+  // ── FEATURE 2: Sensitive-field & form guard ──────────────────────────────
+  // Protects passwords, credit cards, SSN, OTP codes, and form submissions.
+  // Triggered on any site scoring >= 30 (SUSPICIOUS or DANGEROUS).
+  function attachSensitiveFieldGuard(result) {
     if (sentinelAcked) return;
-    const brand = result.brand_impersonated || 'a suspicious site';
-    const score = result.risk_score || 0;
 
-    function showModal(input) {
-      if (sentinelAcked || document.getElementById('pfp-sentinel-host')) return;
+    const score    = result.risk_score || 0;
+    const verdict  = result.verdict || 'SUSPICIOUS';
+    const brand    = result.brand_impersonated || location.hostname;
+    const isDanger = verdict === 'DANGEROUS';
+
+    // ── Classify input fields ────────────────────────────────────────────
+    function classifyField(input) {
+      const type   = (input.type        || '').toLowerCase();
+      const name   = (input.name        || '').toLowerCase();
+      const ph     = (input.placeholder || '').toLowerCase();
+      const ac     = (input.autocomplete|| '').toLowerCase();
+      const id     = (input.id          || '').toLowerCase();
+      const all    = `${name} ${ph} ${ac} ${id}`;
+
+      if (type === 'password')                                  return { kind: 'password',  label: 'your password' };
+      if (ac.includes('cc-') || /card.?num|credit|debit|cvv|cvc|expir/i.test(all)) return { kind: 'card', label: 'credit/debit card details' };
+      if (/ssn|social.?sec|national.?id|passport/i.test(all))  return { kind: 'identity',  label: 'government ID' };
+      if (/otp|one.?time|verify.?code|auth.?code/i.test(all))  return { kind: 'otp',       label: 'verification/OTP code' };
+      if (ac === 'current-password' || ac === 'new-password')   return { kind: 'password',  label: 'your password' };
+      // Hidden text fields that look like they capture sensitive data
+      if (type === 'tel' && isDanger)                           return { kind: 'phone',     label: 'your phone number' };
+      return null;
+    }
+
+    // ── Modal ──────────────────────────────────────────────────────────
+    function showSentinelModal(input, field) {
+      if (sentinelAcked) return;
+      if (document.getElementById('pfp-sentinel-host')) return;
+
       chrome.runtime.sendMessage({ action: 'passwordBlocked' });
 
       const { host, shadow } = makeShadow('pfp-sentinel-host', { inset: '0', width: '100vw', height: '100vh' });
       shadowStyles(shadow, `
+        @import url('https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&display=swap');
         *{box-sizing:border-box;margin:0;padding:0;font-family:'Space Mono',monospace}
-        .overlay{position:fixed;inset:0;background:rgba(0,0,0,0.7);display:flex;align-items:center;justify-content:center}
-        .card{background:#fff;width:420px;max-width:90vw;border-radius:16px;border:2px solid #1a1a1a;
-              box-shadow:5px 5px 0 #1a1a1a;padding:28px;text-align:center}
-        .icon-box{width:52px;height:52px;background:#fef2f2;border-radius:12px;border:2px solid #fca5a5;
-                  display:flex;align-items:center;justify-content:center;margin:0 auto 16px;font-size:24px}
-        h2{font-size:16px;font-weight:700;color:#1a1a1a;margin-bottom:8px}
-        p{font-size:12px;color:#5a5a5a;line-height:1.6;margin-bottom:16px}
-        .score{display:inline-block;background:#fef2f2;border:1px solid #fca5a5;border-radius:6px;
-               padding:4px 10px;font-size:11px;font-weight:700;color:#dc2626;margin-bottom:20px}
-        .btn-primary{display:block;width:100%;padding:10px;background:#4f46e5;color:#fff;border:2px solid #1a1a1a;
-                     border-radius:10px;box-shadow:2px 2px 0 #1a1a1a;font-size:12px;font-weight:700;cursor:pointer;margin-bottom:8px}
-        .btn-ghost{background:none;border:none;color:#9ca3af;font-size:11px;cursor:pointer;text-decoration:underline}
+        .overlay{position:fixed;inset:0;background:rgba(0,0,0,0.82);display:flex;align-items:center;justify-content:center;padding:16px}
+        .card{background:#fff;width:460px;max-width:100%;border-radius:16px;border:2px solid #1a1a1a;
+              box-shadow:6px 6px 0 #1a1a1a;padding:28px;text-align:center}
+        .icon{width:60px;height:60px;background:#fef2f2;border:2px solid #dc2626;border-radius:14px;
+              display:flex;align-items:center;justify-content:center;margin:0 auto 18px;font-size:28px;
+              box-shadow:3px 3px 0 #fca5a5}
+        h2{font-size:17px;font-weight:700;color:#1a1a1a;margin-bottom:8px;line-height:1.3}
+        .sub{font-size:12px;color:#5a5a5a;line-height:1.7;margin-bottom:14px}
+        .sub strong{color:#dc2626}
+        .field-pill{display:inline-block;background:#fef2f2;border:1px solid #fca5a5;border-radius:6px;
+                    padding:3px 10px;font-size:11px;font-weight:700;color:#dc2626;margin-bottom:14px}
+        .stats{display:flex;gap:8px;margin-bottom:20px;justify-content:center}
+        .stat{flex:1;background:#fef2f2;border:1px solid #fca5a5;border-radius:8px;padding:8px 6px;font-size:11px;font-weight:700;color:#dc2626}
+        .stat span{display:block;font-size:9px;font-weight:400;color:#9ca3af;margin-bottom:2px}
+        .btn-primary{display:block;width:100%;padding:12px;background:#4f46e5;color:#fff;border:2px solid #1a1a1a;
+                     border-radius:10px;box-shadow:3px 3px 0 #1a1a1a;font-size:13px;font-weight:700;cursor:pointer;margin-bottom:10px}
+        .btn-ghost{background:none;border:none;color:#9ca3af;font-size:10px;cursor:pointer;text-decoration:underline;
+                   display:${isDanger ? 'none' : 'inline'}}
+        .lock-note{font-size:9px;color:#9ca3af;margin-top:12px;line-height:1.6}
       `);
 
-      const d = document.createElement('div');
-      d.innerHTML = `
+      const div = document.createElement('div');
+      div.innerHTML = `
         <div class="overlay">
           <div class="card">
-            <div class="icon-box">🔒</div>
-            <h2>Stop — this site is suspicious</h2>
-            <p>This site may be impersonating <strong>${escHtml(brand)}</strong>. Entering your password could give attackers access to your real account.</p>
-            <div class="score">Risk score: ${score}/100</div>
-            <button class="btn-primary" id="pfp-cancel-leave">Cancel and leave this site</button>
-            <button class="btn-ghost" id="pfp-proceed">I'm sure this is safe, let me type</button>
+            <div class="icon">🛡</div>
+            <h2>${isDanger ? 'Phishing site — input blocked' : 'Suspicious site detected'}</h2>
+            <p class="sub">
+              ${isDanger
+                ? `This site is <strong>impersonating ${escHtml(brand)}</strong>. Entering <strong>${field?.label || 'sensitive information'}</strong> here will send it directly to attackers.`
+                : `This site may be impersonating <strong>${escHtml(brand)}</strong>. Are you sure you trust this site with <strong>${field?.label || 'your information'}</strong>?`}
+            </p>
+            <div class="field-pill">Blocked: ${field?.label || 'sensitive input'}</div>
+            <div class="stats">
+              <div class="stat"><span>Risk score</span>${score}/100</div>
+              <div class="stat"><span>Verdict</span>${verdict}</div>
+              <div class="stat"><span>Domain</span>${escHtml(location.hostname.slice(0, 18))}</div>
+            </div>
+            <button class="btn-primary" id="pfp-go-safe">Leave this site now</button>
+            <button class="btn-ghost" id="pfp-proceed-anyway">I know the risk — let me type</button>
+            <div class="lock-note">
+              PhishFilter Pro blocked this input to protect your account.<br>
+              If this is a false positive, add ${escHtml(location.hostname)} to your whitelist in the extension popup.
+            </div>
           </div>
         </div>
       `;
-      shadow.appendChild(d);
+      shadow.appendChild(div);
 
-      shadow.getElementById('pfp-cancel-leave').onclick = () => { history.back(); host.remove(); };
-      shadow.getElementById('pfp-proceed').onclick = () => {
-        sentinelAcked = true;
+      shadow.getElementById('pfp-go-safe').onclick = () => {
         host.remove();
-        input && input.focus();
+        history.back();
+        if (!history.length) window.close();
       };
+
+      const proceedBtn = shadow.getElementById('pfp-proceed-anyway');
+      if (!isDanger && proceedBtn) {
+        proceedBtn.onclick = () => {
+          sentinelAcked = true;
+          host.remove();
+          input?.focus();
+        };
+      }
+
+      // DANGEROUS: don't let page JS remove our overlay
+      new MutationObserver(() => {
+        if (!document.getElementById('pfp-sentinel-host') && !sentinelAcked) {
+          showSentinelModal(input, field);
+        }
+      }).observe(document.documentElement, { childList: true });
     }
 
-    // Attach to all existing password inputs
-    function attachToInput(input) {
-      input.addEventListener('focus', () => showModal(input), { once: false });
+    // ── Attach guard to a single field ────────────────────────────────
+    const guardedInputs = new WeakSet();
+
+    function guardField(input) {
+      if (guardedInputs.has(input)) return;
+      const field = classifyField(input);
+      if (!field) return;
+      guardedInputs.add(input);
+
+      // Block focus
+      input.addEventListener('focus', () => {
+        if (!sentinelAcked) showSentinelModal(input, field);
+      }, true);
+
+      // Block keystrokes (capture phase — runs before page JS)
       input.addEventListener('keydown', (e) => {
-        if (!sentinelAcked) { e.preventDefault(); showModal(input); }
-      }, { once: false });
+        if (!sentinelAcked) { e.preventDefault(); e.stopImmediatePropagation(); showSentinelModal(input, field); }
+      }, true);
+
+      // Block paste
+      input.addEventListener('paste', (e) => {
+        if (!sentinelAcked) { e.preventDefault(); e.stopImmediatePropagation(); showSentinelModal(input, field); }
+      }, true);
+
+      // Block input (in case page JS sets value directly)
+      input.addEventListener('input', (e) => {
+        if (!sentinelAcked) { input.value = ''; e.preventDefault(); }
+      }, true);
+
+      // Visually mark the field
+      if (!sentinelAcked) {
+        input.style.setProperty('border', '2px solid #dc2626', 'important');
+        input.style.setProperty('background', '#fff8f8', 'important');
+        input.setAttribute('placeholder', '[PhishFilter: blocked on suspicious site]');
+      }
     }
 
-    document.querySelectorAll('input[type="password"]').forEach(attachToInput);
+    // ── Block ALL form submissions on DANGEROUS sites ──────────────────
+    function blockForms() {
+      document.querySelectorAll('form').forEach(form => {
+        form.addEventListener('submit', (e) => {
+          if (!sentinelAcked) {
+            e.preventDefault();
+            e.stopImmediatePropagation();
+            showSentinelModal(null, { label: 'form data' });
+          }
+        }, true);
+      });
+    }
 
-    // Watch for dynamically added inputs
+    if (isDanger) blockForms();
+
+    // ── Scan all current inputs ────────────────────────────────────────
+    document.querySelectorAll('input').forEach(guardField);
+
+    // ── Watch for dynamically added inputs and forms ───────────────────
     new MutationObserver((mutations) => {
       for (const m of mutations) {
         m.addedNodes.forEach(node => {
           if (node.nodeType !== 1) return;
-          if (node.matches?.('input[type="password"]')) attachToInput(node);
-          node.querySelectorAll?.('input[type="password"]').forEach(attachToInput);
+          const inputs = node.matches?.('input') ? [node] : [...(node.querySelectorAll?.('input') || [])];
+          inputs.forEach(guardField);
+          if (isDanger) {
+            const forms = node.matches?.('form') ? [node] : [...(node.querySelectorAll?.('form') || [])];
+            forms.forEach(form => {
+              form.addEventListener('submit', (e) => {
+                if (!sentinelAcked) { e.preventDefault(); e.stopImmediatePropagation(); showSentinelModal(null, { label: 'form data' }); }
+              }, true);
+            });
+          }
         });
       }
     }).observe(document.body, { childList: true, subtree: true });
@@ -546,18 +662,18 @@
   chrome.runtime.sendMessage({ action: 'getTabResult' }, (cached) => {
     if (!chrome.runtime.lastError && cached) {
       pageResult = cached;
-      if (pageResult.risk_score >= 50) attachPasswordSentinel(pageResult);
+      // Arm field guard on SUSPICIOUS (>= 30) and DANGEROUS sites
+      if (pageResult.risk_score >= 30) attachSensitiveFieldGuard(pageResult);
       return;
     }
 
-    // No cached result yet (e.g. tab was open before extension loaded) — trigger one
+    // No cached result yet — trigger a fresh scan
     chrome.runtime.sendMessage(
       { action: 'scanTabUrl', url: location.href },
       (result) => {
         if (chrome.runtime.lastError || !result || result.offline) return;
         pageResult = result;
-        if (result.risk_score >= 50) attachPasswordSentinel(result);
-        // Show UI if the result warrants it (block page / banner already shown by background)
+        if (result.risk_score >= 30) attachSensitiveFieldGuard(result);
       }
     );
   });
