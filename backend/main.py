@@ -911,7 +911,11 @@ _verify_codes: dict[str, int | None] = {}    # code → chat_id (None = pending)
 _TG_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 _TG_API   = f"https://api.telegram.org/bot{_TG_TOKEN}"
 
-GOOGLE_SCOPES = ["https://www.googleapis.com/auth/gmail.readonly"]
+GOOGLE_SCOPES = [
+    "https://www.googleapis.com/auth/gmail.readonly",
+    "https://www.googleapis.com/auth/userinfo.email",
+    "openid",
+]
 
 _GOOGLE_CLIENT_ID     = os.getenv("GOOGLE_CLIENT_ID", "4979896833-m4ij85sn429q8uhe7qf7qtrtpi0skf81.apps.googleusercontent.com")
 _GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET", "")
@@ -1040,16 +1044,32 @@ async def safe_mails_callback(code: str = "", state: str = "", error: str = "") 
         logger.error(f"Safe Mails: token exchange failed: {type(e).__name__}: {e}")
         return RedirectResponse(f"{_FRONTEND_URL}/safe-mails?error={urllib.parse.quote('token_exchange: ' + str(e)[:80])}")
 
-    # Get user's email via userinfo
+    # Get user's email — try userinfo first, then Gmail profile API as fallback
+    gmail = "connected"
+    access_token = tokens.get("access_token", "")
     try:
         info_resp = await _httpx.AsyncClient().get(
             "https://www.googleapis.com/oauth2/v2/userinfo",
-            headers={"Authorization": f"Bearer {tokens['access_token']}"},
+            headers={"Authorization": f"Bearer {access_token}"},
         )
-        user_info = info_resp.json()
-        gmail = user_info.get("email", "unknown")
-    except Exception:
-        gmail = "connected"
+        info = info_resp.json()
+        if info.get("email"):
+            gmail = info["email"]
+    except Exception as e:
+        logger.warning(f"Safe Mails: userinfo failed: {e}")
+
+    # Fallback: Gmail profile endpoint (works with just gmail.readonly scope)
+    if gmail in ("connected", "unknown"):
+        try:
+            prof_resp = await _httpx.AsyncClient().get(
+                "https://gmail.googleapis.com/gmail/v1/users/me/profile",
+                headers={"Authorization": f"Bearer {access_token}"},
+            )
+            prof = prof_resp.json()
+            if prof.get("emailAddress"):
+                gmail = prof["emailAddress"]
+        except Exception as e:
+            logger.warning(f"Safe Mails: gmail profile failed: {e}")
 
     verify_code = pending.get("code", "")
     telegram_chat_id = pending.get("chat_id")
@@ -1106,6 +1126,93 @@ async def safe_mails_status(session_id: str) -> dict:
         "alerts_sent":     s["alerts_sent"],
         "emails_scanned":  s["emails_scanned"],
     }
+
+
+@app.get("/api/safe-mails/debug/{session_id}")
+async def safe_mails_debug(session_id: str) -> dict:
+    """Diagnostic endpoint — see exactly what's happening for a session."""
+    s = _safe_mail_sessions.get(session_id)
+    if not s:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    # Try a Gmail profile lookup right now to update email if it's unknown
+    if s.get("email") in ("unknown", "connected"):
+        try:
+            import urllib.request as _req, json as _json
+            req = _req.Request(
+                "https://gmail.googleapis.com/gmail/v1/users/me/profile",
+                headers={"Authorization": f"Bearer {s['access_token']}"},
+            )
+            with _req.urlopen(req, timeout=10) as r:
+                prof = _json.loads(r.read())
+                if prof.get("emailAddress"):
+                    s["email"] = prof["emailAddress"]
+        except Exception as e:
+            logger.warning(f"profile fetch err: {e}")
+
+    return {
+        "session_id":         session_id,
+        "email":              s.get("email"),
+        "telegram_chat_id":   s.get("telegram_chat_id"),
+        "active":             s.get("active"),
+        "alerts_sent":        s.get("alerts_sent"),
+        "emails_scanned":     s.get("emails_scanned"),
+        "seen_ids_count":     len(s.get("seen_ids", set())),
+        "has_access_token":   bool(s.get("access_token")),
+        "has_refresh_token":  bool(s.get("refresh_token")),
+    }
+
+
+@app.post("/api/safe-mails/test-alert/{session_id}")
+async def safe_mails_test_alert(session_id: str) -> dict:
+    """Send a test Telegram alert RIGHT NOW based on the latest email in the inbox.
+    Proves: Gmail API works, message extraction works, LLM works, Telegram delivery works."""
+    s = _safe_mail_sessions.get(session_id)
+    if not s:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    chat_id = s.get("telegram_chat_id")
+    if not chat_id:
+        raise HTTPException(status_code=400, detail="No Telegram chat ID linked to this session")
+
+    # Fetch most recent message (any state)
+    msgs_data = _gmail_api_get(s, "/users/me/messages", {"maxResults": "1"})
+    messages = (msgs_data or {}).get("messages", [])
+    if not messages:
+        _send_telegram_message(
+            chat_id,
+            "🧪 *PhishFilter Test*\n\nGmail connected but inbox is empty. The bot pipeline works! "
+            "I'll alert you here as soon as a suspicious email arrives.",
+        )
+        return {"sent": True, "note": "inbox empty — sent generic test"}
+
+    msg_data = _gmail_api_get(s, f"/users/me/messages/{messages[0]['id']}", {"format": "full"})
+    if not msg_data:
+        raise HTTPException(status_code=500, detail="Gmail API failed to fetch message")
+
+    headers = {h["name"]: h["value"] for h in msg_data.get("payload", {}).get("headers", [])}
+    sender  = headers.get("From", "unknown")
+    subject = headers.get("Subject", "(no subject)")
+    body    = _extract_email_body(msg_data.get("payload", {}))
+
+    content = f"From: {sender}\nSubject: {subject}\n\n{body[:3000]}"
+    result  = _sync_analyze_email(content)
+    verdict = result.get("verdict", "UNKNOWN")
+    score   = result.get("risk_score", 0)
+    summary = result.get("summary", "")
+
+    emoji = "🚨" if verdict == "DANGEROUS" else "⚠️" if verdict == "SUSPICIOUS" else "✅"
+    msg = (
+        f"🧪 *PhishFilter Test Alert*\n\n"
+        f"Most recent email in your inbox:\n\n"
+        f"{emoji} *{verdict}* — *{score}/100*\n\n"
+        f"📧 From: `{sender[:60]}`\n"
+        f"📌 Subject: _{subject[:80]}_\n\n"
+        f"{summary[:200]}\n\n"
+        f"_This is a one-time test. Real alerts will only trigger on suspicious mails._"
+    )
+    ok = _send_telegram_message(chat_id, msg)
+    return {"sent": ok, "verdict": verdict, "score": score, "sender": sender[:60]}
 
 
 # ── Telegram webhook ─────────────────────────────────────────────────────────
@@ -1167,20 +1274,43 @@ async def telegram_webhook(update: dict) -> dict:
     return {"ok": True}
 
 
-def _send_telegram_message(chat_id: int, text: str) -> None:
-    """Send a Telegram message via Bot API (no external dependencies)."""
+def _send_telegram_message(chat_id: int, text: str) -> bool:
+    """Send a Telegram message via Bot API (no external dependencies). Returns success bool."""
     if not _TG_TOKEN:
-        logger.info(f"[Telegram] Bot token not set — message: {text[:80]}")
-        return
-    import json as _json, urllib.request as _req
+        logger.warning(f"[Telegram] Bot token NOT SET — would send to {chat_id}: {text[:80]}")
+        return False
+    if not chat_id:
+        logger.warning(f"[Telegram] No chat_id provided — message dropped: {text[:80]}")
+        return False
+    import json as _json, urllib.request as _req, urllib.error as _err
     url     = f"{_TG_API}/sendMessage"
     payload = _json.dumps({"chat_id": chat_id, "text": text, "parse_mode": "Markdown"}).encode()
     request = _req.Request(url, data=payload, headers={"Content-Type": "application/json"}, method="POST")
     try:
-        with _req.urlopen(request, timeout=10):
-            pass
+        with _req.urlopen(request, timeout=10) as r:
+            resp = _json.loads(r.read())
+            if resp.get("ok"):
+                logger.info(f"[Telegram] ✓ sent to {chat_id} ({len(text)} chars)")
+                return True
+            logger.warning(f"[Telegram] API returned not-ok: {resp}")
+            return False
+    except _err.HTTPError as e:
+        body = e.read().decode("utf-8", errors="ignore")
+        logger.warning(f"[Telegram] HTTP {e.code} sending to {chat_id}: {body[:200]}")
+        # If markdown parse error, retry without markdown
+        if "can't parse" in body.lower() or "parse_mode" in body.lower():
+            try:
+                payload2 = _json.dumps({"chat_id": chat_id, "text": text}).encode()
+                req2 = _req.Request(url, data=payload2, headers={"Content-Type": "application/json"}, method="POST")
+                with _req.urlopen(req2, timeout=10) as r:
+                    logger.info(f"[Telegram] ✓ sent to {chat_id} (plain text retry)")
+                    return True
+            except Exception as e2:
+                logger.warning(f"[Telegram] plain retry failed: {e2}")
+        return False
     except Exception as e:
-        logger.warning(f"[Telegram] sendMessage failed: {e}")
+        logger.warning(f"[Telegram] sendMessage failed for {chat_id}: {e}")
+        return False
 
 
 # ── Background Gmail polling ──────────────────────────────────────────────────
@@ -1252,19 +1382,31 @@ def _extract_email_body(payload: dict) -> str:
 def _gmail_poll_loop(session_id: str) -> None:
     import time as _time
 
+    logger.info(f"Safe Mails: polling loop STARTED for session {session_id}")
+    iteration = 0
+
     while True:
         sess = _safe_mail_sessions.get(session_id)
         if not sess or not sess.get("active"):
+            logger.info(f"Safe Mails: polling loop EXIT for {session_id}")
             break
 
+        iteration += 1
         try:
-            # List unread messages from last 10 minutes
+            # First few iterations: scan last 30 mins (in case mail arrived during connection setup)
+            # After that: tight 5-minute window to avoid re-alerting
+            window = "newer_than:30m" if iteration <= 3 else "newer_than:5m"
+
             msgs_data = _gmail_api_get(
                 sess,
                 f"/users/me/messages",
-                {"q": "is:unread newer_than:10m", "maxResults": "10"},
+                {"q": f"is:unread {window} -in:spam -in:trash", "maxResults": "20"},
             )
             messages = (msgs_data or {}).get("messages", [])
+            logger.info(
+                f"Safe Mails [{sess.get('email','?')}]: poll #{iteration} — "
+                f"found {len(messages)} unread in {window}, seen={len(sess.get('seen_ids',set()))}"
+            )
 
             for msg_ref in messages:
                 msg_id = msg_ref.get("id", "")
@@ -1290,11 +1432,17 @@ def _gmail_poll_loop(session_id: str) -> None:
                 score   = result.get("risk_score", 0)
                 summary = result.get("summary", "")
 
-                logger.info(f"Safe Mails [{sess['email']}]: {sender[:40]} → {verdict} ({score})")
+                logger.info(
+                    f"Safe Mails [{sess['email']}]: scanned {sender[:40]} subj={subject[:40]} "
+                    f"→ {verdict} ({score})"
+                )
 
                 chat_id = sess.get("telegram_chat_id")
+                if not chat_id:
+                    logger.warning(f"Safe Mails [{sess['email']}]: NO chat_id linked — skipping alert")
+                    continue
 
-                if score >= 30 and verdict in ("SUSPICIOUS", "DANGEROUS") and chat_id:
+                if score >= 25 and verdict in ("SUSPICIOUS", "DANGEROUS"):
                     sess["alerts_sent"] += 1
                     flags = result.get("red_flags", [])
                     flag_lines = "\n".join(
@@ -1321,9 +1469,9 @@ def _gmail_poll_loop(session_id: str) -> None:
 
                     _send_telegram_message(chat_id, msg)
         except Exception as e:
-            logger.warning(f"Safe Mails: poll error for {session_id}: {e}")
+            logger.warning(f"Safe Mails: poll error for {session_id}: {e}", exc_info=True)
 
-        _time.sleep(120)
+        _time.sleep(60)
 
 
 def _sync_analyze_email(content: str) -> dict:

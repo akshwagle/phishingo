@@ -215,6 +215,31 @@ function SafeMailsContent() {
     localStorage.removeItem('pfp_verify_code')
   }
 
+  const [testSending, setTestSending] = useState(false)
+  const [testResult, setTestResult]   = useState('')
+
+  async function handleSendTest() {
+    if (!sessionId) return
+    setTestSending(true)
+    setTestResult('')
+    try {
+      const r = await fetch(`${BACKEND}/api/safe-mails/test-alert/${sessionId}`, { method: 'POST' })
+      const d = await r.json()
+      if (!r.ok) {
+        setTestResult(d.detail || 'Failed to send test')
+      } else if (d.sent) {
+        setTestResult(`✓ Sent! Check your Telegram. (Latest: ${d.verdict || 'analyzed'})`)
+      } else {
+        setTestResult('Backend reached but Telegram delivery failed — check bot token / chat link')
+      }
+    } catch (err: unknown) {
+      setTestResult(err instanceof Error ? err.message : 'Network error')
+    } finally {
+      setTestSending(false)
+      setTimeout(() => setTestResult(''), 8000)
+    }
+  }
+
   const faqs = [
     { q: 'Do I need a Telegram account?', a: 'Yes — Telegram is free and available on all platforms. Create one in 30 seconds at telegram.org. Then send your code to @phishfilter_bot.' },
     { q: 'What Gmail permissions do you request?', a: 'Read-only (gmail.readonly). We cannot send, delete, or modify any email. Revoke access anytime in myaccount.google.com → Security → Third-party apps.' },
@@ -338,11 +363,23 @@ function SafeMailsContent() {
                   </a>
                 </p>
 
-                <button onClick={handleDisconnect}
-                  className="clay-btn px-4 py-2 text-[13px]"
-                  style={{ background: '#fff1f1', color: '#dc2626', borderColor: '#dc2626' }}>
-                  Disconnect
-                </button>
+                <div className="flex flex-wrap items-center gap-3">
+                  <button onClick={handleSendTest} disabled={testSending}
+                    className="clay-btn px-4 py-2 text-[13px] disabled:opacity-60"
+                    style={{ background: '#eef4ff', color: '#1a56db', borderColor: '#1a56db' }}>
+                    {testSending ? 'Sending…' : 'Send test alert'}
+                  </button>
+                  <button onClick={handleDisconnect}
+                    className="clay-btn px-4 py-2 text-[13px]"
+                    style={{ background: '#fff1f1', color: '#dc2626', borderColor: '#dc2626' }}>
+                    Disconnect
+                  </button>
+                </div>
+                {testResult && (
+                  <div className="mt-3 text-[13px] font-bold" style={{ color: testResult.startsWith('✓') ? '#16a34a' : '#dc2626' }}>
+                    {testResult}
+                  </div>
+                )}
               </div>
             )}
 
