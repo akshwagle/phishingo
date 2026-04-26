@@ -75,18 +75,17 @@ function setScoreRing(score, verdict) {
 }
 
 function setVerdict(verdict, score, summary, redFlags, lastScanId) {
-  // hide pulse, show result
   dom.scanPulse.style.display = 'none';
 
   dom.verdictBadge.textContent = verdict || 'UNKNOWN';
-  dom.verdictBadge.className = `verdict-badge ${verdict || 'UNKNOWN'}`;
+  dom.verdictBadge.className = `badge ${verdict || 'UNKNOWN'}`;
 
   setScoreRing(score || 0, verdict);
 
   dom.summary.textContent = summary || (verdict === 'SAFE' ? 'No threats detected on this page.' :
     verdict === 'SUSPICIOUS' ? 'This page looks suspicious. Be cautious.' :
-    verdict === 'DANGEROUS' ? 'Phishing site detected! Do not enter any information.' :
-    'Scan this page to check for threats.');
+    verdict === 'DANGEROUS' ? 'Phishing site detected — do not enter any info.' :
+    'Click "Scan this page" to run a full forensic scan.');
 
   // Red flags
   if (redFlags && redFlags.length && verdict !== 'SAFE') {
@@ -113,11 +112,11 @@ function setVerdict(verdict, score, summary, redFlags, lastScanId) {
 function showScanning() {
   dom.scanPulse.style.display = 'flex';
   dom.verdictBadge.textContent = 'SCANNING';
-  dom.verdictBadge.className = 'verdict-badge SCANNING';
-  dom.scoreNum.textContent = '?';
+  dom.verdictBadge.className = 'badge SCANNING';
+  dom.scoreNum.textContent = '·';
   dom.scoreRing.setAttribute('stroke-dasharray', `0 ${CIRC}`);
   dom.scoreRing.style.stroke = '#1a56db';
-  dom.summary.textContent = 'Analyzing this page...';
+  dom.summary.textContent = 'Analyzing this page…';
   dom.flagsPreview.style.display = 'none';
   dom.btnViewDetails.style.display = 'none';
 }
@@ -386,38 +385,52 @@ function injectSidePanelAndScan(backendUrl, tabUrl) {
   (document.documentElement || document.body || document).appendChild(host);
 
   const css = `
-    *{box-sizing:border-box;margin:0;padding:0;font-family:'Space Mono',ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px}
-    .panel{background:#fff;border-left:2px solid #111;height:100vh;display:flex;flex-direction:column;
-           box-shadow:-4px 0 0 #111;animation:slide .2s ease;color:#111}
+    @import url('https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&display=swap');
+    *{box-sizing:border-box;margin:0;padding:0;font-family:'Space Mono',ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;line-height:1.5}
+    .panel{background:#fff;border-left:1px solid #1a1a1a;height:100vh;display:flex;flex-direction:column;
+           box-shadow:-3px 0 0 #1a1a1a;animation:slide .22s ease;color:#1a1a1a}
     @keyframes slide{from{transform:translateX(380px)}to{transform:translateX(0)}}
     .hdr{display:flex;align-items:center;justify-content:space-between;padding:14px 16px;
-         border-bottom:2px solid #111;background:#fff;flex-shrink:0}
-    .hdr-left{display:flex;align-items:center;gap:8px;font-weight:700;font-size:13px}
-    .shield{width:28px;height:28px;border-radius:8px;background:#1a56db;border:2px solid #111;
-            display:flex;align-items:center;justify-content:center;color:#fff;font-weight:700;font-size:14px}
-    .close{background:none;border:none;font-size:18px;cursor:pointer;color:#5a5a5a;line-height:1;padding:4px}
+         border-bottom:1px solid #e8e8e3;background:#fff;flex-shrink:0}
+    .hdr-left{display:flex;align-items:center;gap:9px;font-weight:700;font-size:13px}
+    .shield{width:26px;height:26px;border-radius:7px;background:#1a56db;
+            display:flex;align-items:center;justify-content:center;color:#fff;flex-shrink:0}
+    .shield svg{width:13px;height:13px;stroke:#fff;fill:none;stroke-width:2.5;stroke-linecap:round;stroke-linejoin:round}
+    .blue{color:#1a56db}
+    .close{background:none;border:none;font-size:16px;cursor:pointer;color:#9ca3af;line-height:1;padding:4px;font-family:inherit}
+    .close:hover{color:#1a1a1a}
     .body{flex:1;overflow-y:auto;padding:14px}
-    .body.center{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;padding:24px}
-    .verdict-card{border:2px solid #111;border-radius:12px;padding:14px;margin-bottom:12px;box-shadow:3px 3px 0 #111}
-    .v-label{font-size:10px;color:#5a5a5a;margin-bottom:6px;text-transform:uppercase;letter-spacing:.5px}
-    .v-badge{display:inline-block;padding:3px 10px;border-radius:6px;font-weight:700;font-size:12px;margin-bottom:4px;border:1.5px solid currentColor}
-    .score-big{font-size:28px;font-weight:700;margin:4px 0}
+    .body.center{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;padding:24px}
+    .verdict-card{border:1px solid #1a1a1a;border-radius:12px;padding:14px;margin-bottom:14px;box-shadow:3px 3px 0 #1a1a1a}
+    .v-label{font-size:9px;color:#9ca3af;margin-bottom:6px;text-transform:uppercase;letter-spacing:.5px}
+    .v-badge{display:inline-block;padding:3px 9px;border-radius:5px;font-weight:700;font-size:11px;margin-bottom:6px;border:1.5px solid currentColor;letter-spacing:.4px}
+    .score-big{font-size:26px;font-weight:700;margin:2px 0 0}
+    .score-big small{font-size:13px;color:#9ca3af;font-weight:400;margin-left:2px}
     .section{margin-bottom:14px}
-    .sec-title{font-weight:700;color:#374151;margin-bottom:6px;font-size:10px;text-transform:uppercase;letter-spacing:.5px}
-    .item{background:#f9fafb;border:1.5px solid #e5e7eb;border-radius:8px;padding:6px 10px;margin-bottom:4px;font-size:11px;color:#374151;word-break:break-all}
-    .item.danger{border-color:#fca5a5;background:#fff1f1;color:#dc2626}
-    .item.warn{border-color:#fde68a;background:#fffbee;color:#92400e}
-    .flag{display:flex;align-items:flex-start;gap:6px;margin-bottom:5px;font-size:11px;color:#374151;line-height:1.4}
-    .flag-dot{width:6px;height:6px;border-radius:50%;background:#dc2626;flex-shrink:0;margin-top:5px}
-    .footer{padding:12px 16px;border-top:2px solid #111;background:#fff;flex-shrink:0}
-    .open-btn{display:block;width:100%;padding:10px;background:#1a56db;color:#fff;border:2px solid #111;
-              border-radius:8px;box-shadow:2px 2px 0 #111;font-weight:700;cursor:pointer;text-align:center;
-              font-family:inherit;font-size:12px}
-    .dot{width:10px;height:10px;border-radius:50%;background:#1a56db;animation:pulse 1s infinite;display:inline-block;margin:0 3px}
+    .sec-title{font-weight:700;color:#5a5a5a;margin-bottom:7px;font-size:9px;text-transform:uppercase;letter-spacing:.5px}
+    .item{background:#fafaf7;border:1px solid #e8e8e3;border-radius:7px;padding:7px 10px;margin-bottom:5px;font-size:10px;color:#374151;word-break:break-all;line-height:1.4}
+    .item.danger{border-color:#fca5a5;background:#fff5f5;color:#991b1b}
+    .item.warn{border-color:#fde68a;background:#fffbeb;color:#92400e}
+    .item .lead{display:inline-block;font-weight:700;margin-right:5px}
+    .flag{display:flex;align-items:flex-start;gap:7px;margin-bottom:6px;font-size:11px;color:#374151;line-height:1.5}
+    .flag::before{content:'▸';color:#dc2626;flex-shrink:0;font-weight:700}
+    .footer{padding:12px 16px;border-top:1px solid #e8e8e3;background:#fafaf7;flex-shrink:0}
+    .open-btn{display:block;width:100%;padding:10px;background:#1a56db;color:#fff;border:1.5px solid #1a1a1a;
+              border-radius:8px;box-shadow:2px 2px 0 #1a1a1a;font-weight:700;cursor:pointer;text-align:center;
+              font-family:inherit;font-size:11px}
+    .open-btn:hover{background:#1447c0}
+    .dots{display:flex;gap:6px}
+    .dot{width:8px;height:8px;border-radius:50%;background:#1a56db;animation:pulse 1s infinite}
     .dot:nth-child(2){animation-delay:.2s}.dot:nth-child(3){animation-delay:.4s}
-    @keyframes pulse{0%,100%{opacity:.4}50%{opacity:1}}
-    .meta-row{display:flex;justify-content:space-between;font-size:10px;color:#5a5a5a;margin-top:8px}
-    .domain-line{font-size:10px;color:#5a5a5a;word-break:break-all;margin-top:4px}
+    @keyframes pulse{0%,100%{opacity:.4;transform:scale(1)}50%{opacity:1;transform:scale(1.3)}}
+    .domain-line{font-size:10px;color:#9ca3af;word-break:break-all;margin-top:8px;text-transform:lowercase}
+    .empty{text-align:center;padding:20px 0}
+    .empty .check-icon{width:42px;height:42px;border-radius:12px;background:#f0fdf4;
+                       border:1.5px solid #16a34a;display:inline-flex;align-items:center;justify-content:center;
+                       color:#16a34a;margin-bottom:10px}
+    .empty .check-icon svg{width:22px;height:22px}
+    .empty-title{color:#16a34a;font-weight:700;font-size:13px}
+    .empty-sub{color:#6b7280;font-size:11px;margin-top:4px}
   `;
   const styleEl = document.createElement('style');
   styleEl.textContent = css;
@@ -426,18 +439,25 @@ function injectSidePanelAndScan(backendUrl, tabUrl) {
   const wrap = document.createElement('div');
   shadow.appendChild(wrap);
 
+  const headerHtml = `
+    <div class="hdr">
+      <div class="hdr-left">
+        <div class="shield"><svg viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg></div>
+        <span>PhishFilter <span class="blue">Pro</span></span>
+      </div>
+      <button class="close" id="pfp-close">✕</button>
+    </div>
+  `;
+
   const renderLoading = () => {
     wrap.innerHTML = `
       <div class="panel">
-        <div class="hdr">
-          <div class="hdr-left"><div class="shield">P</div>PhishFilter Pro</div>
-          <button class="close" id="pfp-close">✕</button>
-        </div>
+        ${headerHtml}
         <div class="body center">
-          <div><span class="dot"></span><span class="dot"></span><span class="dot"></span></div>
+          <div class="dots"><span class="dot"></span><span class="dot"></span><span class="dot"></span></div>
           <div style="font-size:12px;color:#5a5a5a;text-align:center;line-height:1.6">
-            Scanning entire page…<br>
-            <span style="font-size:10px;color:#9ca3af">Analyzing all links, forms & content with AI</span>
+            Scanning entire page
+            <div style="font-size:10px;color:#9ca3af;margin-top:4px">analyzing links, forms &amp; content</div>
           </div>
           <div class="domain-line">${escHtml(location.hostname)}</div>
         </div>
@@ -470,31 +490,28 @@ function injectSidePanelAndScan(backendUrl, tabUrl) {
 
     wrap.innerHTML = `
       <div class="panel">
-        <div class="hdr">
-          <div class="hdr-left"><div class="shield">P</div>PhishFilter Pro</div>
-          <button class="close" id="pfp-close">✕</button>
-        </div>
+        ${headerHtml}
         <div class="body">
           <div class="verdict-card" style="background:${bgColor}">
-            <div class="v-label">Full page scan result</div>
+            <div class="v-label">Full page scan</div>
             <span class="v-badge" style="color:${vColor}">${verdict}</span>
-            <div class="score-big" style="color:${vColor}">${score}<span style="font-size:13px;color:#6b7280">/100</span></div>
-            ${summary ? `<div style="font-size:11px;color:#374151;margin-top:6px;line-height:1.5">${escHtml(summary)}</div>` : ''}
+            <div class="score-big" style="color:${vColor}">${score}<small>/100</small></div>
+            ${summary ? `<div style="font-size:11px;color:#374151;margin-top:8px;line-height:1.5">${escHtml(summary)}</div>` : ''}
             <div class="domain-line">${escHtml(location.hostname)}</div>
           </div>
 
           <div class="section">
             <div class="sec-title">Scan summary</div>
-            <div class="item">Links analyzed: ${linksTotal || 'all on page'}</div>
-            <div class="item">Form fields: ${pwordFields > 0 ? `${pwordFields} sensitive` : 'none flagged'}</div>
-            <div class="item">AI red flags: ${llmFlags.length}</div>
+            <div class="item"><span class="lead">Links</span>${linksTotal || 0} analyzed${dangerLinks.length + suspLinks.length > 0 ? ` · ${dangerLinks.length + suspLinks.length} flagged` : ''}</div>
+            <div class="item"><span class="lead">Forms</span>${pwordFields > 0 ? `${pwordFields} sensitive field${pwordFields > 1 ? 's' : ''}` : 'no sensitive fields'}</div>
+            <div class="item"><span class="lead">AI</span>${llmFlags.length > 0 ? `${llmFlags.length} red flag${llmFlags.length > 1 ? 's' : ''}` : 'no threats detected'}</div>
           </div>
 
           ${dangerLinks.length + suspLinks.length > 0 ? `
             <div class="section">
-              <div class="sec-title">Suspicious links (${dangerLinks.length + suspLinks.length})</div>
-              ${dangerLinks.slice(0,8).map(u => `<div class="item danger">⛔ ${escHtml((u.url || u).slice(0,80))}</div>`).join('')}
-              ${suspLinks.slice(0,8).map(u  => `<div class="item warn">⚠ ${escHtml((u.url || u).slice(0,80))}</div>`).join('')}
+              <div class="sec-title">Flagged links · ${dangerLinks.length + suspLinks.length}</div>
+              ${dangerLinks.slice(0,8).map(u => `<div class="item danger"><span class="lead">DANGER</span>${escHtml((u.url || u).slice(0,75))}</div>`).join('')}
+              ${suspLinks.slice(0,8).map(u  => `<div class="item warn"><span class="lead">WARN</span>${escHtml((u.url || u).slice(0,75))}</div>`).join('')}
             </div>
           ` : ''}
 
@@ -503,16 +520,20 @@ function injectSidePanelAndScan(backendUrl, tabUrl) {
               <div class="sec-title">AI red flags</div>
               ${llmFlags.slice(0,6).map(f => {
                 const t = typeof f === 'string' ? f : (f.description || f.flag || '');
-                return `<div class="flag"><div class="flag-dot"></div><div>${escHtml(t)}</div></div>`;
+                return `<div class="flag">${escHtml(t)}</div>`;
               }).join('')}
             </div>
           ` : ''}
 
           ${threatCount === 0 ? `
-            <div style="text-align:center;padding:24px 0">
-              <div style="width:60px;height:60px;margin:0 auto 12px;border-radius:14px;background:#f0fff6;border:2px solid #16a34a;display:flex;align-items:center;justify-content:center;color:#16a34a;font-size:28px;font-weight:700">✓</div>
-              <div style="color:#16a34a;font-weight:700;font-size:14px">No threats detected</div>
-              <div style="color:#6b7280;font-size:11px;margin-top:6px">This page appears safe to use</div>
+            <div class="empty">
+              <div class="check-icon">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                  <polyline points="20 6 9 17 4 12"/>
+                </svg>
+              </div>
+              <div class="empty-title">No threats detected</div>
+              <div class="empty-sub">This page appears safe</div>
             </div>
           ` : ''}
         </div>
@@ -531,15 +552,16 @@ function injectSidePanelAndScan(backendUrl, tabUrl) {
   const renderError = (msg) => {
     wrap.innerHTML = `
       <div class="panel">
-        <div class="hdr">
-          <div class="hdr-left"><div class="shield">P</div>PhishFilter Pro</div>
-          <button class="close" id="pfp-close">✕</button>
-        </div>
+        ${headerHtml}
         <div class="body center">
-          <div style="width:48px;height:48px;border-radius:12px;background:#fef2f2;border:2px solid #dc2626;display:flex;align-items:center;justify-content:center;color:#dc2626;font-size:24px;font-weight:700">!</div>
+          <div style="width:42px;height:42px;border-radius:12px;background:#fef2f2;border:1.5px solid #dc2626;display:flex;align-items:center;justify-content:center;color:#dc2626">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
+            </svg>
+          </div>
           <div style="font-size:13px;font-weight:700;color:#1a1a1a">Couldn't reach scanner</div>
-          <div style="font-size:11px;color:#5a5a5a;text-align:center;line-height:1.5">${escHtml(msg)}</div>
-          <button id="pfp-retry" style="margin-top:8px;padding:8px 16px;background:#1a56db;color:#fff;border:2px solid #111;border-radius:8px;font-family:inherit;font-size:12px;font-weight:700;cursor:pointer">Retry</button>
+          <div style="font-size:11px;color:#5a5a5a;text-align:center;line-height:1.5;max-width:280px">${escHtml(msg)}</div>
+          <button id="pfp-retry" style="margin-top:6px;padding:8px 18px;background:#1a56db;color:#fff;border:1.5px solid #1a1a1a;border-radius:8px;box-shadow:2px 2px 0 #1a1a1a;font-family:inherit;font-size:11px;font-weight:700;cursor:pointer">Retry</button>
         </div>
       </div>
     `;
@@ -604,18 +626,22 @@ dom.btnClipboard.addEventListener('click', async () => {
       if (!url.startsWith('http')) url = 'https://' + url;
       try { new URL(url); } catch { alert('No URL found in clipboard.'); return; }
 
-      dom.btnClipboard.textContent = 'Scanning...';
+      const orig = dom.btnClipboard.innerHTML;
+      dom.btnClipboard.textContent = 'Scanning…';
       const base = await getBackendUrl();
-      const res = await fetch(`${base}/api/url-quick`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url }),
-        signal: AbortSignal.timeout(8000),
-      });
-      const data = await res.json();
-      const v = data.verdict || 'UNKNOWN';
-      alert(`Clipboard URL: ${url}\n\nVerdict: ${v}\nRisk score: ${data.risk_score || 0}/100\n${data.brand_impersonated ? `Brand: ${data.brand_impersonated}` : ''}`);
-      dom.btnClipboard.textContent = 'Scan from clipboard';
+      try {
+        const res = await fetch(`${base}/api/url-quick`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url }),
+          signal: AbortSignal.timeout(8000),
+        });
+        const data = await res.json();
+        const v = data.verdict || 'UNKNOWN';
+        alert(`Clipboard URL: ${url}\n\nVerdict: ${v}\nRisk score: ${data.risk_score || 0}/100${data.brand_impersonated ? `\nBrand: ${data.brand_impersonated}` : ''}`);
+      } finally {
+        dom.btnClipboard.innerHTML = orig;
+      }
     });
   } catch (err) {
     console.error('[PhishFilter] Clipboard scan error:', err);

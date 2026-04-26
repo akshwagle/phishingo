@@ -180,10 +180,10 @@
     const v = result.verdict || 'UNKNOWN';
     const score = result.risk_score || 0;
     const colors = {
-      SAFE:       { bg: '#f0fdf4', border: '#16a34a', text: '#166534', badge: '#dcfce7', icon: '✅' },
-      SUSPICIOUS: { bg: '#fffbeb', border: '#d97706', text: '#92400e', badge: '#fef3c7', icon: '⚠️' },
-      DANGEROUS:  { bg: '#fef2f2', border: '#dc2626', text: '#991b1b', badge: '#fee2e2', icon: '🚨' },
-      UNKNOWN:    { bg: '#f9fafb', border: '#9ca3af', text: '#374151', badge: '#f3f4f6', icon: '❓' },
+      SAFE:       { bg: '#f0fdf4', border: '#16a34a', text: '#166534', badge: '#dcfce7', icon: '✓' },
+      SUSPICIOUS: { bg: '#fffbeb', border: '#d97706', text: '#92400e', badge: '#fef3c7', icon: '!' },
+      DANGEROUS:  { bg: '#fef2f2', border: '#dc2626', text: '#991b1b', badge: '#fee2e2', icon: '!' },
+      UNKNOWN:    { bg: '#f9fafb', border: '#9ca3af', text: '#374151', badge: '#f3f4f6', icon: '?' },
     };
     const c = colors[v] || colors.UNKNOWN;
 
@@ -216,8 +216,11 @@
         }
         .top { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 6px; }
         .left { display: flex; align-items: center; gap: 8px; }
-        .icon { font-size: 18px; line-height: 1; }
-        .title { font-weight: 700; font-size: 13px; }
+        .icon { display: inline-flex; align-items: center; justify-content: center;
+          width: 22px; height: 22px; border-radius: 5px;
+          background: ${c.badge}; color: ${c.border}; border: 1.5px solid ${c.border};
+          font-size: 12px; font-weight: 700; line-height: 1; }
+        .title { font-weight: 700; font-size: 13px; letter-spacing: 0.3px; }
         .score-pill { padding: 2px 8px; border-radius: 12px; font-size: 10px; font-weight: 700;
           background: ${c.badge}; color: ${c.text}; border: 1px solid ${c.border}; white-space: nowrap; }
         .actions { display: flex; gap: 6px; }
@@ -290,14 +293,22 @@
     btn.id = 'pfp-gmail-scan-btn';
     btn.title = 'PhishFilter: Scan this email';
     btn.style.cssText = `
-      display: inline-flex; align-items: center; gap: 5px;
-      padding: 4px 10px; margin: 0 4px;
-      background: #eff6ff; color: #1e40af;
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 5px 11px; margin: 0 4px;
+      background: #eef4ff; color: #1a56db;
       border: 1.5px solid #1a56db; border-radius: 6px;
       font-size: 11px; font-weight: 700; cursor: pointer;
       font-family: 'Space Mono', monospace;
+      transition: background 0.15s;
     `;
-    btn.innerHTML = '🛡 Scan email';
+    btn.onmouseenter = () => { btn.style.background = '#1a56db'; btn.style.color = '#fff'; };
+    btn.onmouseleave = () => { btn.style.background = '#eef4ff'; btn.style.color = '#1a56db'; };
+    btn.innerHTML = `
+      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0">
+        <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+      </svg>
+      <span>Scan email</span>
+    `;
     btn.addEventListener('click', () => runScan(true));
     toolbar.appendChild(btn);
   }
