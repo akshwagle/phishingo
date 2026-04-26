@@ -28,10 +28,11 @@ function Navbar() {
           </span>
         </Link>
 
-        <nav className="hidden sm:flex items-center gap-5 text-[11px] font-bold">
+        <nav className="hidden sm:flex items-center gap-5 text-[12px] font-bold">
           <Link href="/" className="text-[#5a5a5a] hover:text-[#4f46e5] no-underline transition-colors">Scanner</Link>
           <Link href="/features" className="text-[#5a5a5a] hover:text-[#4f46e5] no-underline transition-colors">Features</Link>
           <Link href="/extension" className="text-[#4f46e5] no-underline border-b-2 border-[#4f46e5] pb-0.5">Extension</Link>
+          <Link href="/safe-mails" className="text-[#5a5a5a] hover:text-[#4f46e5] no-underline transition-colors">Safe Mails</Link>
         </nav>
 
         <div className="flex items-center gap-2 text-[11px] text-[#5a5a5a]">

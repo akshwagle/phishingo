@@ -32,10 +32,11 @@ export default function FeaturesPage() {
               PhishFilter <span className="text-[#4f46e5]">Pro</span>
             </span>
           </Link>
-          <nav className="hidden sm:flex items-center gap-5 text-[11px] font-bold">
+          <nav className="hidden sm:flex items-center gap-5 text-[12px] font-bold">
             <Link href="/" className="text-[#5a5a5a] hover:text-[#4f46e5] no-underline transition-colors">Scanner</Link>
             <Link href="/features" className="text-[#4f46e5] border-b-2 border-[#4f46e5] pb-0.5 no-underline">Features</Link>
             <Link href="/extension" className="text-[#5a5a5a] hover:text-[#4f46e5] no-underline transition-colors">Extension</Link>
+            <Link href="/safe-mails" className="text-[#5a5a5a] hover:text-[#4f46e5] no-underline transition-colors">Safe Mails</Link>
           </nav>
           <Link href="/" className="clay-btn bg-[#b3c8ff] text-[#1a1a1a] px-3 py-2 text-[11px] hidden sm:inline-flex">
             Back to scanner

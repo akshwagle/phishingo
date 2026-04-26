@@ -891,6 +891,216 @@ async def page_scan(req: PageScanRequest) -> dict[str, Any]:
     }
 
 
+# ── Safe Mails: Gmail IMAP monitor + WhatsApp alerts ─────────────────────────
+
+import imaplib
+import email as emaillib
+from email.header import decode_header as email_decode_header
+import base64
+import threading
+
+_safe_mail_sessions: dict[str, dict] = {}  # session_id → config
+
+class SafeMailConnectRequest(BaseModel):
+    email: str
+    app_password: str
+    whatsapp: str
+
+
+class SafeMailDisconnectRequest(BaseModel):
+    session_id: str
+
+
+@app.post("/api/safe-mails/connect")
+async def safe_mails_connect(req: SafeMailConnectRequest) -> dict:
+    """Connect Gmail via IMAP and start monitoring for phishing emails."""
+    # Validate IMAP connection first
+    try:
+        mail = imaplib.IMAP4_SSL("imap.gmail.com", 993)
+        mail.login(req.email, req.app_password)
+        mail.logout()
+    except imaplib.IMAP4.error as e:
+        raise HTTPException(status_code=400, detail=f"Gmail login failed: {str(e)}. Check your App Password.")
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Could not reach Gmail: {str(e)}")
+
+    session_id = str(uuid.uuid4())
+    _safe_mail_sessions[session_id] = {
+        "email": req.email,
+        "app_password": req.app_password,
+        "whatsapp": req.whatsapp,
+        "active": True,
+        "last_uid": None,
+        "alerts_sent": 0,
+        "emails_scanned": 0,
+    }
+
+    # Start background polling thread
+    thread = threading.Thread(
+        target=_gmail_poll_loop,
+        args=(session_id,),
+        daemon=True,
+    )
+    thread.start()
+
+    logger.info(f"Safe Mails: started monitoring {req.email} → {req.whatsapp}")
+    return {"session_id": session_id, "email": req.email, "status": "connected"}
+
+
+@app.post("/api/safe-mails/disconnect")
+async def safe_mails_disconnect(req: SafeMailDisconnectRequest) -> dict:
+    if req.session_id in _safe_mail_sessions:
+        _safe_mail_sessions[req.session_id]["active"] = False
+        del _safe_mail_sessions[req.session_id]
+    return {"status": "disconnected"}
+
+
+@app.get("/api/safe-mails/status/{session_id}")
+async def safe_mails_status(session_id: str) -> dict:
+    s = _safe_mail_sessions.get(session_id)
+    if not s:
+        raise HTTPException(status_code=404, detail="Session not found")
+    return {
+        "active": s["active"],
+        "email": s["email"],
+        "alerts_sent": s["alerts_sent"],
+        "emails_scanned": s["emails_scanned"],
+    }
+
+
+def _gmail_poll_loop(session_id: str) -> None:
+    """Background thread: poll Gmail every 2 minutes, analyze new emails, send WhatsApp if suspicious."""
+    import time as _time
+    seen_uids: set = set()
+
+    while True:
+        sess = _safe_mail_sessions.get(session_id)
+        if not sess or not sess.get("active"):
+            break
+
+        try:
+            mail = imaplib.IMAP4_SSL("imap.gmail.com", 993)
+            mail.login(sess["email"], sess["app_password"])
+            mail.select("INBOX")
+
+            # Get recent unread emails (last 10)
+            _, msgs = mail.search(None, "UNSEEN")
+            uid_list = msgs[0].split() if msgs[0] else []
+
+            for uid in uid_list[-10:]:
+                uid_str = uid.decode()
+                if uid_str in seen_uids:
+                    continue
+                seen_uids.add(uid_str)
+
+                try:
+                    _, data = mail.fetch(uid, "(RFC822)")
+                    raw = data[0][1] if data and data[0] else None
+                    if not raw:
+                        continue
+
+                    msg = emaillib.message_from_bytes(raw)
+                    subject_raw, enc = email_decode_header(msg.get("Subject", ""))[0]
+                    subject = subject_raw.decode(enc or "utf-8") if isinstance(subject_raw, bytes) else (subject_raw or "")
+                    sender = msg.get("From", "")
+
+                    # Extract body
+                    body = ""
+                    if msg.is_multipart():
+                        for part in msg.walk():
+                            if part.get_content_type() == "text/plain":
+                                try:
+                                    body = part.get_payload(decode=True).decode("utf-8", errors="ignore")
+                                    break
+                                except Exception:
+                                    pass
+                    else:
+                        try:
+                            body = msg.get_payload(decode=True).decode("utf-8", errors="ignore")
+                        except Exception:
+                            body = str(msg.get_payload())
+
+                    # Build content for analysis
+                    content = f"From: {sender}\nSubject: {subject}\n\n{body[:3000]}"
+                    sess["emails_scanned"] += 1
+
+                    # Run analysis synchronously (we're in a thread)
+                    import httpx
+                    backend_url = os.getenv("BACKEND_URL", "http://localhost:8080")
+                    # Use internal API call
+                    result = _sync_analyze(content)
+
+                    verdict = result.get("verdict", "UNKNOWN")
+                    score = result.get("risk_score", 0)
+
+                    logger.info(f"Safe Mails: {sender} → {verdict} ({score})")
+
+                    if score >= 30 and verdict in ("SUSPICIOUS", "DANGEROUS"):
+                        sess["alerts_sent"] += 1
+                        red_flags = result.get("red_flags", [])
+                        flag_text = "\n".join(
+                            f"- {f if isinstance(f, str) else f.get('description', '')}"
+                            for f in red_flags[:3]
+                        )
+                        _send_whatsapp_alert(
+                            to=sess["whatsapp"],
+                            message=(
+                                f"*PhishFilter Pro Alert*\n\n"
+                                f"*{verdict} EMAIL DETECTED*\n\n"
+                                f"From: {sender[:60]}\n"
+                                f"Subject: {subject[:80]}\n\n"
+                                f"Risk score: *{score}/100*\n"
+                                + (f"Red flags:\n{flag_text}\n" if flag_text else "")
+                                + f"\nStay safe — do not click any links in this email."
+                            ),
+                        )
+                except Exception as e:
+                    logger.warning(f"Safe Mails: error processing email {uid_str}: {e}")
+
+            mail.logout()
+
+        except Exception as e:
+            logger.warning(f"Safe Mails: poll error for {session_id}: {e}")
+
+        _time.sleep(120)  # Poll every 2 minutes
+
+
+def _sync_analyze(content: str) -> dict:
+    """Synchronous version of LLM analysis for background thread use."""
+    try:
+        import asyncio as _asyncio
+        loop = _asyncio.new_event_loop()
+        result = loop.run_until_complete(llm_engine.analyze(content, input_type="email"))
+        loop.close()
+        return result if isinstance(result, dict) else {}
+    except Exception as e:
+        logger.warning(f"Safe Mails: sync analyze error: {e}")
+        return {"verdict": "UNKNOWN", "risk_score": 0}
+
+
+def _send_whatsapp_alert(to: str, message: str) -> None:
+    """Send WhatsApp message via Twilio. Falls back to logging if not configured."""
+    twilio_sid = os.getenv("TWILIO_ACCOUNT_SID")
+    twilio_token = os.getenv("TWILIO_AUTH_TOKEN")
+    twilio_from = os.getenv("TWILIO_WHATSAPP_FROM", "whatsapp:+14155238886")
+
+    if not twilio_sid or not twilio_token:
+        logger.info(f"[Safe Mails] WhatsApp alert (no Twilio configured): {message[:100]}")
+        return
+
+    try:
+        from twilio.rest import Client
+        client = Client(twilio_sid, twilio_token)
+        client.messages.create(
+            body=message,
+            from_=twilio_from,
+            to=f"whatsapp:{to}",
+        )
+        logger.info(f"[Safe Mails] WhatsApp alert sent to {to}")
+    except Exception as e:
+        logger.warning(f"[Safe Mails] WhatsApp send failed: {e}")
+
+
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 8000))
     uvicorn.run("main:app", host="0.0.0.0", port=port, reload=True)

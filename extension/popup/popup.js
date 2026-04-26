@@ -235,9 +235,20 @@ async function loadCurrentTab() {
 
 function triggerLiveScan(url, tabId) {
   showScanning();
+  // Timeout safety: if no response in 12s, fall back to direct scan
+  let resolved = false;
+  const timer = setTimeout(() => {
+    if (!resolved) {
+      resolved = true;
+      directApiScan(url);
+    }
+  }, 12000);
+
   chrome.runtime.sendMessage({ action: 'scanTabUrl', url, tabId }, (result) => {
+    clearTimeout(timer);
+    if (resolved) return; // already timed out
+    resolved = true;
     if (chrome.runtime.lastError || !result) {
-      // Try direct API call as fallback
       directApiScan(url);
       return;
     }
@@ -325,10 +336,8 @@ dom.btnScanPage.addEventListener('click', async () => {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (!tab) return;
 
-  dom.btnScanPage.disabled = true;
-  dom.btnScanPage.textContent = 'Scanning...';
-
-  // Inject content script if not already there, then send message
+  // Fire-and-forget: send the scan message then close popup immediately
+  // The side panel will appear in the page without keeping popup open
   try {
     await chrome.scripting.executeScript({
       target: { tabId: tab.id },
@@ -338,13 +347,12 @@ dom.btnScanPage.addEventListener('click', async () => {
 
   chrome.tabs.sendMessage(tab.id, { action: 'startPageScan' }, () => {
     if (chrome.runtime.lastError) {
-      // Fallback: open full analysis on web app
-      chrome.tabs.create({ url: `https://phishingo-zk3c.vercel.app/?url=${encodeURIComponent(tab.url)}` });
+      // Content script not running — open full analysis on website
+      chrome.tabs.create({ url: `https://phishingo-zk3c.vercel.app/?url=${encodeURIComponent(tab.url || '')}` });
     }
-    dom.btnScanPage.disabled = false;
-    dom.btnScanPage.innerHTML = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg> Scan this page`;
-    window.close();
   });
+  // Close popup right away so user can see the side panel appear
+  window.close();
 });
 
 // ── Clipboard scan ─────────────────────────────────────────────────────────
