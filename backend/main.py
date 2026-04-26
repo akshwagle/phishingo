@@ -1150,6 +1150,10 @@ async def safe_mails_debug(session_id: str) -> dict:
         except Exception as e:
             logger.warning(f"profile fetch err: {e}")
 
+    # Probe the Gmail API right now to surface any errors
+    s.pop("_last_gmail_error", None)
+    test_call = _gmail_api_get(s, "/users/me/profile")
+
     return {
         "session_id":         session_id,
         "email":              s.get("email"),
@@ -1160,6 +1164,9 @@ async def safe_mails_debug(session_id: str) -> dict:
         "seen_ids_count":     len(s.get("seen_ids", set())),
         "has_access_token":   bool(s.get("access_token")),
         "has_refresh_token":  bool(s.get("refresh_token")),
+        "gmail_api_works":    test_call is not None,
+        "gmail_profile":      test_call,
+        "last_gmail_error":   s.get("_last_gmail_error"),
     }
 
 
@@ -1175,20 +1182,39 @@ async def safe_mails_test_alert(session_id: str) -> dict:
     if not chat_id:
         raise HTTPException(status_code=400, detail="No Telegram chat ID linked to this session")
 
-    # Fetch most recent message (any state)
-    msgs_data = _gmail_api_get(s, "/users/me/messages", {"maxResults": "1"})
-    messages = (msgs_data or {}).get("messages", [])
+    # Clear last error for a clean read
+    s.pop("_last_gmail_error", None)
+
+    # Fetch most recent message (any state) from primary inbox
+    msgs_data = _gmail_api_get(s, "/users/me/messages", {"maxResults": "5", "q": "in:inbox"})
+    if msgs_data is None:
+        # API error — surface it loud and clear instead of pretending inbox is empty
+        err = s.get("_last_gmail_error", "Unknown Gmail API error")
+        _send_telegram_message(
+            chat_id,
+            f"❌ *PhishFilter Test FAILED*\n\nGmail API error: `{err}`\n\n"
+            f"Most likely fix:\n"
+            f"1. Enable Gmail API in Google Cloud Console for this project\n"
+            f"2. Disconnect + reconnect (the new scopes need a fresh consent)\n"
+            f"3. Make sure your OAuth consent screen is in *Production* mode "
+            f"(or you're a Test user)",
+        )
+        raise HTTPException(status_code=502, detail=f"Gmail API failed: {err}")
+
+    messages = msgs_data.get("messages", [])
     if not messages:
         _send_telegram_message(
             chat_id,
-            "🧪 *PhishFilter Test*\n\nGmail connected but inbox is empty. The bot pipeline works! "
-            "I'll alert you here as soon as a suspicious email arrives.",
+            "🧪 *PhishFilter Test*\n\nGmail API works ✓ but `in:inbox` returned 0 messages. "
+            "Make sure you have at least one mail in your Primary inbox (not Spam/Trash).",
         )
         return {"sent": True, "note": "inbox empty — sent generic test"}
 
     msg_data = _gmail_api_get(s, f"/users/me/messages/{messages[0]['id']}", {"format": "full"})
     if not msg_data:
-        raise HTTPException(status_code=500, detail="Gmail API failed to fetch message")
+        err = s.get("_last_gmail_error", "Unknown Gmail API error")
+        _send_telegram_message(chat_id, f"❌ *Test failed*\nFetch message error: `{err}`")
+        raise HTTPException(status_code=500, detail=f"Gmail API failed to fetch message: {err}")
 
     headers = {h["name"]: h["value"] for h in msg_data.get("payload", {}).get("headers", [])}
     sender  = headers.get("From", "unknown")
@@ -1351,13 +1377,21 @@ def _gmail_api_get(sess: dict, path: str, params: dict | None = None) -> dict | 
             with urllib.request.urlopen(req, timeout=15) as r:
                 return _json.loads(r.read())
         except urllib.error.HTTPError as e:
+            body = ""
+            try:
+                body = e.read().decode("utf-8", errors="ignore")[:400]
+            except Exception:
+                pass
             if e.code == 401 and attempt == 0:
+                logger.info(f"Safe Mails: 401 on {path} → refreshing token")
                 if _refresh_access_token(sess):
                     continue
-            logger.warning(f"Safe Mails: Gmail API error {e.code} for {path}")
+            logger.warning(f"Safe Mails: Gmail API error {e.code} on {path} — {body}")
+            sess["_last_gmail_error"] = f"HTTP {e.code}: {body[:200]}"
             return None
         except Exception as ex:
             logger.warning(f"Safe Mails: Gmail API exception: {ex}")
+            sess["_last_gmail_error"] = str(ex)[:200]
             return None
     return None
 
@@ -1397,15 +1431,23 @@ def _gmail_poll_loop(session_id: str) -> None:
             # After that: tight 5-minute window to avoid re-alerting
             window = "newer_than:30m" if iteration <= 3 else "newer_than:5m"
 
+            # Don't filter by is:unread — Gmail web client marks mails as read instantly,
+            # so we'd miss them. seen_ids prevents re-alerting on the same message.
             msgs_data = _gmail_api_get(
                 sess,
                 f"/users/me/messages",
-                {"q": f"is:unread {window} -in:spam -in:trash", "maxResults": "20"},
+                {"q": f"in:inbox {window} -in:spam -in:trash -from:me", "maxResults": "20"},
             )
-            messages = (msgs_data or {}).get("messages", [])
+            if msgs_data is None:
+                err = sess.get("_last_gmail_error", "unknown")
+                logger.warning(f"Safe Mails [{sess.get('email','?')}]: poll #{iteration} FAILED — {err}")
+                _time.sleep(60)
+                continue
+
+            messages = msgs_data.get("messages", [])
             logger.info(
                 f"Safe Mails [{sess.get('email','?')}]: poll #{iteration} — "
-                f"found {len(messages)} unread in {window}, seen={len(sess.get('seen_ids',set()))}"
+                f"found {len(messages)} mails in {window}, seen={len(sess.get('seen_ids',set()))}"
             )
 
             for msg_ref in messages:
