@@ -18,6 +18,7 @@ import uvicorn
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel
 
 from engines import domain_intel as domain_engine
@@ -40,12 +41,19 @@ logging.basicConfig(
 logger = logging.getLogger("phishfilter.main")
 
 # ── In-memory job store ───────────────────────────────────────────────────────
-# Production: replace with Redis or a proper task queue.
 _jobs: dict[str, dict[str, Any]] = {}
 
 _BRANDS_PATH = os.path.join(os.path.dirname(__file__), "data", "top_brands.json")
 _SAMPLE_DIR = os.path.join(os.path.dirname(__file__), "samples")
 _BRANDS: list[str] = []
+
+# ── MongoDB ───────────────────────────────────────────────────────────────────
+_mongo_client: AsyncIOMotorClient | None = None
+_scans_col = None  # motor Collection
+
+
+def _get_col():
+    return _scans_col
 
 
 def _load_brands() -> list[str]:
@@ -55,12 +63,29 @@ def _load_brands() -> list[str]:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """
-    Startup: load brands list + warm the OpenPhish feed.
-    Shutdown: nothing special required.
-    """
-    global _BRANDS
+    """Startup: connect MongoDB, load brands, warm OpenPhish. Shutdown: close DB."""
+    global _BRANDS, _mongo_client, _scans_col
+
     logger.info("PhishFilter Pro starting up")
+
+    # MongoDB
+    mongo_uri = os.getenv("MONGODB_URI", "").strip()
+    if mongo_uri:
+        try:
+            _mongo_client = AsyncIOMotorClient(mongo_uri, serverSelectionTimeoutMS=5000)
+            db = _mongo_client.get_default_database(default="phishfilter")
+            _scans_col = db["scans"]
+            await _scans_col.create_index("job_id", unique=True)
+            await _scans_col.create_index([("timestamp", -1)])
+            logger.info("MongoDB connected — collection: %s.scans", db.name)
+        except Exception as exc:
+            logger.error("MongoDB connection failed: %s — using in-memory fallback", exc)
+            _mongo_client = None
+            _scans_col = None
+    else:
+        logger.warning("MONGODB_URI not set — dashboard stats will be in-memory only")
+
+    # Brands
     try:
         _BRANDS = _load_brands()
         logger.info("Loaded %d brand domains", len(_BRANDS))
@@ -70,6 +95,9 @@ async def lifespan(app: FastAPI):
 
     asyncio.create_task(threat_engine.refresh_openphish_loop())
     yield
+
+    if _mongo_client:
+        _mongo_client.close()
     logger.info("PhishFilter Pro shutting down")
 
 
@@ -292,12 +320,40 @@ async def run_analysis(job_id: str, request: AnalyzeRequest) -> None:
         "result": score_result,
     })
     await ws_queue.put(None)  # sentinel: stream complete
-    logger.info(
-        "Job %s complete — verdict=%s score=%s",
-        job_id,
-        score_result.get("verdict"),
-        score_result.get("score"),
-    )
+
+    verdict = score_result.get("verdict", "SUSPICIOUS")
+    score_val = score_result.get("score", 0)
+    logger.info("Job %s complete — verdict=%s score=%s", job_id, verdict, score_val)
+
+    # ── Persist summary to MongoDB ────────────────────────────────────────
+    col = _get_col()
+    if col is not None:
+        try:
+            created_at = float(_jobs[job_id].get("created_at", time.time()))
+            duration = round(time.time() - created_at, 2)
+            parsed_urls = report.get("parsed", {}).get("urls", [])
+            body_preview = report.get("parsed", {}).get("body", "")[:90]
+            description = (parsed_urls[0] if parsed_urls else body_preview) or "Scan completed"
+            if len(description) > 90:
+                description = description[:90] + "..."
+
+            await col.update_one(
+                {"job_id": job_id},
+                {"$setOnInsert": {
+                    "job_id":           job_id,
+                    "timestamp":        report["timestamp"],
+                    "input_type":       input_type,
+                    "verdict":          verdict,
+                    "score":            score_val,
+                    "confidence":       score_result.get("confidence", 0),
+                    "description":      description,
+                    "duration_seconds": duration,
+                    "created_at":       created_at,
+                }},
+                upsert=True,
+            )
+        except Exception as exc:
+            logger.warning("MongoDB write failed for job %s: %s", job_id, exc)
 
 
 def _extract_urls_from_text(text: str) -> list[str]:
@@ -432,63 +488,84 @@ async def health() -> dict[str, Any]:
 async def dashboard() -> dict[str, Any]:
     """
     Lightweight dashboard snapshot for frontend homepage metrics/feed.
-    Values are derived from completed in-memory jobs.
+    Reads from MongoDB when available; falls back to in-memory jobs.
     """
-    done_jobs = [j for j in _jobs.values() if j.get("status") == "done" and j.get("report")]
-    reports = [j["report"] for j in done_jobs]
-    reports.sort(key=lambda r: float(r.get("timestamp", 0)), reverse=True)
-
-    total_scanned = len(reports)
-    dangerous = sum(1 for r in reports if r.get("score", {}).get("verdict") == "DANGEROUS")
-    accuracy = 0.0 if total_scanned == 0 else round(
-        (sum(1 for r in reports if r.get("score", {}).get("confidence", 0) >= 70) / total_scanned) * 100,
-        1,
-    )
-
-    durations: list[float] = []
-    for job in done_jobs:
-        created_at = float(job.get("created_at", 0))
-        report_ts = float(job.get("report", {}).get("timestamp", 0))
-        if created_at > 0 and report_ts >= created_at:
-            durations.append(report_ts - created_at)
-    avg_scan_time = round(sum(durations) / len(durations), 1) if durations else 0.0
-
+    col = _get_col()
     now = time.time()
-    recent: list[dict[str, Any]] = []
-    for report in reports[:20]:
-        parsed_urls = report.get("parsed", {}).get("urls", [])
-        summary = (
-            parsed_urls[0] if parsed_urls else report.get("parsed", {}).get("body", "")[:80]
+
+    if col is not None:
+        # ── MongoDB path ──────────────────────────────────────────────────
+        total_scanned = await col.count_documents({})
+        dangerous     = await col.count_documents({"verdict": "DANGEROUS"})
+        accurate      = await col.count_documents({"confidence": {"$gte": 70}})
+        accuracy      = round((accurate / total_scanned) * 100, 1) if total_scanned else 0.0
+
+        avg_pipeline = [{"$group": {"_id": None, "avg": {"$avg": "$duration_seconds"}}}]
+        avg_result   = await col.aggregate(avg_pipeline).to_list(1)
+        avg_scan_time = round(avg_result[0]["avg"], 1) if avg_result else 0.0
+
+        recent: list[dict[str, Any]] = []
+        async for doc in col.find({}, sort=[("timestamp", -1)], limit=20):
+            ts = float(doc.get("timestamp", now))
+            minutes = int(max(0, now - ts) // 60)
+            time_ago = (
+                "just now"          if minutes < 1  else
+                f"{minutes}m ago"   if minutes < 60 else
+                f"{minutes // 60}h ago"
+            )
+            recent.append({
+                "job_id":      doc.get("job_id"),
+                "verdict":     doc.get("verdict", "SUSPICIOUS"),
+                "description": doc.get("description", "Scan completed"),
+                "score":       doc.get("score", 0),
+                "time_ago":    time_ago,
+            })
+    else:
+        # ── In-memory fallback ────────────────────────────────────────────
+        done_jobs = [j for j in _jobs.values() if j.get("status") == "done" and j.get("report")]
+        reports   = sorted(
+            [j["report"] for j in done_jobs],
+            key=lambda r: float(r.get("timestamp", 0)),
+            reverse=True,
         )
-        summary = summary or "Scan completed"
-        if len(summary) > 90:
-            summary = summary[:90] + "..."
+        total_scanned = len(reports)
+        dangerous     = sum(1 for r in reports if r.get("score", {}).get("verdict") == "DANGEROUS")
+        accuracy      = 0.0 if not total_scanned else round(
+            sum(1 for r in reports if r.get("score", {}).get("confidence", 0) >= 70)
+            / total_scanned * 100, 1,
+        )
+        durations = [
+            float(j.get("report", {}).get("timestamp", 0)) - float(j.get("created_at", 0))
+            for j in done_jobs
+            if float(j.get("created_at", 0)) > 0
+        ]
+        avg_scan_time = round(sum(durations) / len(durations), 1) if durations else 0.0
 
-        ts = float(report.get("timestamp", now))
-        minutes = int(max(0, now - ts) // 60)
-        if minutes < 1:
-            time_ago = "just now"
-        elif minutes < 60:
-            time_ago = f"{minutes}m ago"
-        else:
-            hours = minutes // 60
-            time_ago = f"{hours}h ago"
-
-        recent.append(
-            {
-                "job_id": report.get("job_id"),
-                "verdict": report.get("score", {}).get("verdict", "SUSPICIOUS"),
+        recent = []
+        for report in reports[:20]:
+            parsed_urls = report.get("parsed", {}).get("urls", [])
+            summary = parsed_urls[0] if parsed_urls else report.get("parsed", {}).get("body", "")[:90]
+            summary = (summary or "Scan completed")[:90]
+            ts = float(report.get("timestamp", now))
+            minutes = int(max(0, now - ts) // 60)
+            time_ago = (
+                "just now"          if minutes < 1  else
+                f"{minutes}m ago"   if minutes < 60 else
+                f"{minutes // 60}h ago"
+            )
+            recent.append({
+                "job_id":      report.get("job_id"),
+                "verdict":     report.get("score", {}).get("verdict", "SUSPICIOUS"),
                 "description": summary,
-                "score": report.get("score", {}).get("score", 0),
-                "time_ago": time_ago,
-            }
-        )
+                "score":       report.get("score", {}).get("score", 0),
+                "time_ago":    time_ago,
+            })
 
     return {
         "stats": {
-            "emails_scanned": total_scanned,
-            "phishes_caught": dangerous,
-            "accuracy": accuracy,
+            "emails_scanned":        total_scanned,
+            "phishes_caught":        dangerous,
+            "accuracy":              accuracy,
             "avg_scan_time_seconds": avg_scan_time,
         },
         "recent_scans": recent,

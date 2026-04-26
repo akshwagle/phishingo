@@ -12,3 +12,4 @@ pyOpenSSL>=24.1.0
 cryptography>=42.0.0
 python-dotenv>=1.0.1
 tldextract>=5.1.2
+motor>=3.4.0
