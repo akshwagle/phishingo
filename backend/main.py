@@ -1176,21 +1176,50 @@ def _sync_analyze_email(content: str) -> dict:
 
 
 def _send_whatsapp_alert(to: str, message: str) -> None:
-    twilio_sid   = os.getenv("TWILIO_ACCOUNT_SID")
-    twilio_token = os.getenv("TWILIO_AUTH_TOKEN")
-    twilio_from  = os.getenv("TWILIO_WHATSAPP_FROM", "whatsapp:+14155238886")
+    """
+    Send WhatsApp message via Meta WhatsApp Cloud API (free tier).
+    Required env vars:
+      WHATSAPP_PHONE_NUMBER_ID  — from Meta Developer Console → WhatsApp → Getting Started
+      WHATSAPP_ACCESS_TOKEN     — permanent system user token (or temporary test token)
+    The recipient must be added as a test number in Meta Console, OR send you a message first.
+    """
+    phone_number_id = os.getenv("WHATSAPP_PHONE_NUMBER_ID", "")
+    access_token    = os.getenv("WHATSAPP_ACCESS_TOKEN", "")
 
-    if not twilio_sid or not twilio_token:
-        logger.info(f"[Safe Mails] WhatsApp alert (Twilio not configured): {message[:120]}")
+    if not phone_number_id or not access_token:
+        logger.info(f"[Safe Mails] WhatsApp Cloud API not configured — alert: {message[:120]}")
         return
+
+    # Normalise number: must be E.164 without the leading +
+    to_clean = to.lstrip("+").replace(" ", "").replace("-", "")
+
+    import json as _json
+    import urllib.request as _req
+
+    url = f"https://graph.facebook.com/v20.0/{phone_number_id}/messages"
+    payload = _json.dumps({
+        "messaging_product": "whatsapp",
+        "to": to_clean,
+        "type": "text",
+        "text": {"preview_url": False, "body": message},
+    }).encode()
+
+    request = _req.Request(
+        url,
+        data=payload,
+        headers={
+            "Authorization": f"Bearer {access_token}",
+            "Content-Type":  "application/json",
+        },
+        method="POST",
+    )
     try:
-        from twilio.rest import Client
-        Client(twilio_sid, twilio_token).messages.create(
-            body=message, from_=twilio_from, to=f"whatsapp:{to}"
-        )
-        logger.info(f"[Safe Mails] WhatsApp alert sent to {to}")
+        with _req.urlopen(request, timeout=10) as resp:
+            result = _json.loads(resp.read())
+            msg_id = result.get("messages", [{}])[0].get("id", "?")
+            logger.info(f"[Safe Mails] WhatsApp Cloud API → {to} | msg_id={msg_id}")
     except Exception as e:
-        logger.warning(f"[Safe Mails] WhatsApp send failed: {e}")
+        logger.warning(f"[Safe Mails] WhatsApp Cloud API send failed: {e}")
 
 
 if __name__ == "__main__":
