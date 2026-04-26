@@ -891,7 +891,7 @@ async def page_scan(req: PageScanRequest) -> dict[str, Any]:
     }
 
 
-# ── Safe Mails: Google OAuth + Gmail API + WhatsApp alerts ───────────────────
+# ── Safe Mails: Google OAuth + Gmail API + Telegram alerts ───────────────────
 
 import base64
 import email as emaillib
@@ -899,8 +899,12 @@ import threading
 import urllib.parse
 from email.header import decode_header as _decode_header
 
-_safe_mail_sessions: dict[str, dict] = {}  # session_id → config
-_oauth_pending: dict[str, dict] = {}        # state → {whatsapp}
+_safe_mail_sessions: dict[str, dict] = {}   # session_id → config
+_oauth_pending: dict[str, dict] = {}         # google-state → {tg_token}
+_tg_pending: dict[str, str] = {}             # tg_token → session_id (pre-auth link)
+
+_TG_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
+_TG_API   = f"https://api.telegram.org/bot{_TG_TOKEN}"
 
 GOOGLE_SCOPES = ["https://www.googleapis.com/auth/gmail.readonly"]
 
@@ -914,7 +918,7 @@ _FRONTEND_URL = os.getenv("FRONTEND_URL", "https://phishingo-zk3c.vercel.app")
 
 
 class SafeMailAuthRequest(BaseModel):
-    whatsapp: str  # user's WhatsApp number
+    tg_token: str  # link token from frontend (ties Telegram chat_id to Gmail session)
 
 
 class SafeMailDisconnectRequest(BaseModel):
@@ -928,7 +932,8 @@ async def safe_mails_auth_url(req: SafeMailAuthRequest) -> dict:
         raise HTTPException(status_code=503, detail="Google OAuth not configured on this server.")
 
     state = str(uuid.uuid4())
-    _oauth_pending[state] = {"whatsapp": req.whatsapp}
+    # Store the tg_token so we can retrieve it in the callback
+    _oauth_pending[state] = {"tg_token": req.tg_token}
 
     params = {
         "client_id":     _GOOGLE_CLIENT_ID,
@@ -941,6 +946,19 @@ async def safe_mails_auth_url(req: SafeMailAuthRequest) -> dict:
     }
     auth_url = "https://accounts.google.com/o/oauth2/v2/auth?" + urllib.parse.urlencode(params)
     return {"auth_url": auth_url, "state": state}
+
+
+@app.get("/api/safe-mails/tg-status/{tg_token}")
+async def safe_mails_tg_status(tg_token: str) -> dict:
+    """Frontend polls this to know when user has started the bot (chat_id is available)."""
+    # Check if any session has this tg_token
+    for sid, sess in _safe_mail_sessions.items():
+        if sess.get("tg_token") == tg_token and sess.get("telegram_chat_id"):
+            return {"linked": True, "session_id": sid, "email": sess.get("email", "")}
+    # Also check pending (bot started but Gmail not yet connected)
+    if tg_token in _tg_pending:
+        return {"linked": True, "session_id": None}  # bot linked, no Gmail yet
+    return {"linked": False}
 
 
 @app.get("/api/safe-mails/callback")
@@ -985,25 +1003,39 @@ async def safe_mails_callback(code: str = "", state: str = "", error: str = "") 
     except Exception:
         gmail = "connected"
 
+    tg_token = pending.get("tg_token", "")
+
     session_id = str(uuid.uuid4())
+    # Look up Telegram chat_id if user already started the bot
+    telegram_chat_id = _tg_pending.pop(tg_token, None)
+
     _safe_mail_sessions[session_id] = {
-        "email":         gmail,
-        "whatsapp":      pending["whatsapp"],
-        "access_token":  tokens.get("access_token", ""),
-        "refresh_token": tokens.get("refresh_token", ""),
-        "active":        True,
-        "alerts_sent":   0,
-        "emails_scanned": 0,
-        "seen_ids":      set(),
+        "email":            gmail,
+        "tg_token":         tg_token,
+        "telegram_chat_id": telegram_chat_id,  # may be None if user hasn't /start-ed yet
+        "access_token":     tokens.get("access_token", ""),
+        "refresh_token":    tokens.get("refresh_token", ""),
+        "active":           True,
+        "alerts_sent":      0,
+        "emails_scanned":   0,
+        "seen_ids":         set(),
     }
 
     # Start background polling
     threading.Thread(target=_gmail_poll_loop, args=(session_id,), daemon=True).start()
-    logger.info(f"Safe Mails: Google OAuth connected {gmail} → {pending['whatsapp']}")
+    logger.info(f"Safe Mails: Google OAuth connected {gmail} (tg_token={tg_token}, chat_id={telegram_chat_id})")
+
+    # Send Telegram welcome if already linked
+    if telegram_chat_id:
+        _send_telegram_message(
+            telegram_chat_id,
+            f"✅ *Gmail connected!*\n\nMonitoring *{gmail}*\n\nI'll message you here whenever a suspicious email arrives.",
+        )
 
     redirect = (
         f"{_FRONTEND_URL}/safe-mails"
         f"?status=connected&session={session_id}&email={urllib.parse.quote(gmail)}"
+        f"&tg_token={urllib.parse.quote(tg_token)}"
     )
     return RedirectResponse(redirect)
 
@@ -1028,6 +1060,78 @@ async def safe_mails_status(session_id: str) -> dict:
         "alerts_sent":     s["alerts_sent"],
         "emails_scanned":  s["emails_scanned"],
     }
+
+
+# ── Telegram webhook ─────────────────────────────────────────────────────────
+
+@app.post("/api/telegram/webhook")
+async def telegram_webhook(request: Request) -> dict:
+    """Telegram calls this for every update. Handle /start {tg_token} deep links."""
+    try:
+        data = await request.json()
+    except Exception:
+        return {"ok": True}
+
+    message = data.get("message") or data.get("edited_message") or {}
+    text     = message.get("text", "")
+    chat     = message.get("chat", {})
+    chat_id  = chat.get("id")
+    name     = chat.get("first_name", "there")
+
+    if not chat_id:
+        return {"ok": True}
+
+    if text.startswith("/start"):
+        parts     = text.split(" ", 1)
+        tg_token  = parts[1].strip() if len(parts) > 1 else ""
+
+        if tg_token:
+            # Link this chat to the pending session
+            _tg_pending[tg_token] = chat_id
+
+            # If Gmail is already connected (rare race), link immediately
+            for sess in _safe_mail_sessions.values():
+                if sess.get("tg_token") == tg_token and not sess.get("telegram_chat_id"):
+                    sess["telegram_chat_id"] = chat_id
+                    _send_telegram_message(
+                        chat_id,
+                        f"✅ *All connected, {name}!*\n\nMonitoring *{sess['email']}*\n\nI'll alert you here whenever a suspicious email arrives. Stay safe!",
+                    )
+                    return {"ok": True}
+
+            # Gmail not yet connected — tell user to go back and connect
+            _send_telegram_message(
+                chat_id,
+                f"👋 Hi {name}! Your Telegram is linked.\n\n"
+                "Now go back to the *Safe Mails* page and click *Connect Gmail* to finish setup.\n\n"
+                "Once connected I'll watch your inbox and alert you here.",
+            )
+        else:
+            # Plain /start without token
+            _send_telegram_message(
+                chat_id,
+                f"👋 Hi {name}! I'm *PhishFilter Pro*.\n\n"
+                "I scan your Gmail for phishing emails and alert you here instantly.\n\n"
+                f"Get started at:\n{_FRONTEND_URL}/safe-mails",
+            )
+
+    return {"ok": True}
+
+
+def _send_telegram_message(chat_id: int, text: str) -> None:
+    """Send a Telegram message via Bot API (no external dependencies)."""
+    if not _TG_TOKEN:
+        logger.info(f"[Telegram] Bot token not set — message: {text[:80]}")
+        return
+    import json as _json, urllib.request as _req
+    url     = f"{_TG_API}/sendMessage"
+    payload = _json.dumps({"chat_id": chat_id, "text": text, "parse_mode": "Markdown"}).encode()
+    request = _req.Request(url, data=payload, headers={"Content-Type": "application/json"}, method="POST")
+    try:
+        with _req.urlopen(request, timeout=10):
+            pass
+    except Exception as e:
+        logger.warning(f"[Telegram] sendMessage failed: {e}")
 
 
 # ── Background Gmail polling ──────────────────────────────────────────────────
@@ -1132,31 +1236,41 @@ def _gmail_poll_loop(session_id: str) -> None:
                 sess["emails_scanned"] += 1
                 content = f"From: {sender}\nSubject: {subject}\n\n{body[:3000]}"
 
-                result = _sync_analyze_email(content)
+                result  = _sync_analyze_email(content)
                 verdict = result.get("verdict", "UNKNOWN")
                 score   = result.get("risk_score", 0)
+                summary = result.get("summary", "")
 
                 logger.info(f"Safe Mails [{sess['email']}]: {sender[:40]} → {verdict} ({score})")
 
-                if score >= 30 and verdict in ("SUSPICIOUS", "DANGEROUS"):
+                chat_id = sess.get("telegram_chat_id")
+
+                if score >= 30 and verdict in ("SUSPICIOUS", "DANGEROUS") and chat_id:
                     sess["alerts_sent"] += 1
                     flags = result.get("red_flags", [])
-                    flag_text = "\n".join(
-                        f"- {f if isinstance(f, str) else f.get('description', '')}"
+                    flag_lines = "\n".join(
+                        f"• {f if isinstance(f, str) else f.get('description', '')}"
                         for f in flags[:3]
                     )
-                    _send_whatsapp_alert(
-                        to=sess["whatsapp"],
-                        message=(
-                            f"*PhishFilter Pro Alert*\n\n"
-                            f"*{verdict} EMAIL DETECTED*\n\n"
-                            f"From: {sender[:60]}\n"
-                            f"Subject: {subject[:80]}\n\n"
-                            f"Risk score: *{score}/100*\n"
-                            + (f"\nRed flags:\n{flag_text}\n" if flag_text else "")
-                            + "\nDo NOT click any links in this email."
-                        ),
+                    emoji  = "🚨" if verdict == "DANGEROUS" else "⚠️"
+                    verdict_label = "DANGEROUS — DO NOT open" if verdict == "DANGEROUS" else "SUSPICIOUS — be careful"
+
+                    msg = (
+                        f"{emoji} *PhishFilter Pro*\n\n"
+                        f"*{verdict_label}*\n\n"
+                        f"📧 From: `{sender[:60]}`\n"
+                        f"📌 Subject: _{subject[:80]}_\n\n"
+                        f"🔴 Risk score: *{score}/100*\n\n"
                     )
+                    if summary:
+                        # Keep summary short and plain
+                        short = summary[:200].rstrip()
+                        msg += f"📝 _{short}_\n\n"
+                    if flag_lines:
+                        msg += f"Red flags:\n{flag_lines}\n\n"
+                    msg += "❌ Do NOT click any links in this email."
+
+                    _send_telegram_message(chat_id, msg)
         except Exception as e:
             logger.warning(f"Safe Mails: poll error for {session_id}: {e}")
 
@@ -1175,51 +1289,6 @@ def _sync_analyze_email(content: str) -> dict:
         return {"verdict": "UNKNOWN", "risk_score": 0}
 
 
-def _send_whatsapp_alert(to: str, message: str) -> None:
-    """
-    Send WhatsApp message via Meta WhatsApp Cloud API (free tier).
-    Required env vars:
-      WHATSAPP_PHONE_NUMBER_ID  — from Meta Developer Console → WhatsApp → Getting Started
-      WHATSAPP_ACCESS_TOKEN     — permanent system user token (or temporary test token)
-    The recipient must be added as a test number in Meta Console, OR send you a message first.
-    """
-    phone_number_id = os.getenv("WHATSAPP_PHONE_NUMBER_ID", "")
-    access_token    = os.getenv("WHATSAPP_ACCESS_TOKEN", "")
-
-    if not phone_number_id or not access_token:
-        logger.info(f"[Safe Mails] WhatsApp Cloud API not configured — alert: {message[:120]}")
-        return
-
-    # Normalise number: must be E.164 without the leading +
-    to_clean = to.lstrip("+").replace(" ", "").replace("-", "")
-
-    import json as _json
-    import urllib.request as _req
-
-    url = f"https://graph.facebook.com/v20.0/{phone_number_id}/messages"
-    payload = _json.dumps({
-        "messaging_product": "whatsapp",
-        "to": to_clean,
-        "type": "text",
-        "text": {"preview_url": False, "body": message},
-    }).encode()
-
-    request = _req.Request(
-        url,
-        data=payload,
-        headers={
-            "Authorization": f"Bearer {access_token}",
-            "Content-Type":  "application/json",
-        },
-        method="POST",
-    )
-    try:
-        with _req.urlopen(request, timeout=10) as resp:
-            result = _json.loads(resp.read())
-            msg_id = result.get("messages", [{}])[0].get("id", "?")
-            logger.info(f"[Safe Mails] WhatsApp Cloud API → {to} | msg_id={msg_id}")
-    except Exception as e:
-        logger.warning(f"[Safe Mails] WhatsApp Cloud API send failed: {e}")
 
 
 if __name__ == "__main__":
