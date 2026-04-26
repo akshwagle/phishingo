@@ -243,14 +243,15 @@ export default function ExtensionPage() {
                 </div>
               </div>
 
-              {/* Right: screenshot placeholder */}
+              {/* Right: screenshot */}
               <div className="flex-1 flex items-center justify-center">
-                <div
-                  className="w-full rounded-xl border-2 border-dashed border-[#d1d5db] flex items-center justify-center text-[11px] text-[#9ca3af]"
-                  style={{ aspectRatio: '16/9', background: '#f5f0e8' }}
-                >
-                  [Screenshot: Step {step.n}]
-                </div>
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  src={`/screenshots/step${step.n}.png`}
+                  alt={`Install step ${step.n}: ${step.title}`}
+                  className="w-full rounded-xl border-2 border-[#1a1a1a] object-cover"
+                  style={{ boxShadow: '2px 2px 0 #1a1a1a', aspectRatio: '16/9' }}
+                />
               </div>
             </div>
           ))}
