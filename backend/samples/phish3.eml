@@ -1,0 +1,116 @@
+From: Chase Online Banking <alerts@chase-secure-banking.click>
+To: customer@bank-user.com
+Subject: URGENT: Your Chase account transaction requires immediate verification
+Date: Wed, 23 Apr 2025 08:45:00 +0000
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="CHASE_MIXED_BOUNDARY_7777"
+Message-ID: <chasebank.phish.2025.04.23@chase-secure-banking.click>
+Return-Path: <noreply@chase-secure-banking.click>
+Reply-To: <response-handler@chasesecure.gq>
+Received: from mail.chase-secure-banking.click ([185.220.101.45])
+        by smtp.bank-user.com with ESMTPS id xyz789
+        for <customer@bank-user.com>; Wed, 23 Apr 2025 08:45:00 +0000
+X-Spam-Status: No, score=-0.5
+
+--CHASE_MIXED_BOUNDARY_7777
+Content-Type: multipart/alternative; boundary="CHASE_ALT_BOUNDARY_8888"
+
+--CHASE_ALT_BOUNDARY_8888
+Content-Type: text/plain; charset="utf-8"
+
+Dear Chase Customer,
+
+A transaction of $4,892.00 has been initiated from your Chase checking account.
+
+Transaction Details:
+  Amount: $4,892.00
+  Recipient: International Wire Transfer
+  Date: April 23, 2025
+  Reference: CHK-20250423-87654
+
+If you DID NOT authorize this transaction, you must act immediately.
+The transaction will be processed in 2 hours unless you cancel it.
+
+Cancel this transaction now:
+https://chase-secure-banking.click/cancel-transaction?ref=CHK-20250423-87654&auth=required
+
+To protect your account you will be asked to verify your identity and provide
+your account credentials.
+
+Chase Customer Service
+1-800-CHASE-01 (Fake Number)
+
+IMPORTANT: This is a time-sensitive security alert. Failure to respond may result
+in permanent loss of funds.
+
+--CHASE_ALT_BOUNDARY_8888
+Content-Type: text/html; charset="utf-8"
+
+<!DOCTYPE html>
+<html>
+<head><meta charset="UTF-8"><title>Chase Security Alert</title></head>
+<body style="margin:0;padding:0;background:#f4f4f4;font-family:Arial,Helvetica,sans-serif">
+<table width="100%" bgcolor="#f4f4f4" cellpadding="20">
+<tr><td align="center">
+<table width="580" bgcolor="#ffffff" cellpadding="0" cellspacing="0" style="border:1px solid #ddd">
+  <!-- Header -->
+  <tr bgcolor="#117aca">
+    <td style="padding:16px 24px">
+      <span style="color:white;font-size:22px;font-weight:bold">&#9876; Chase</span>
+    </td>
+  </tr>
+  <!-- Alert Banner -->
+  <tr bgcolor="#d0021b">
+    <td style="padding:12px 24px;color:white;font-weight:bold">
+      &#9888; URGENT SECURITY ALERT — Immediate Action Required
+    </td>
+  </tr>
+  <!-- Body -->
+  <tr>
+    <td style="padding:24px">
+      <p style="margin:0 0 12px">Dear Chase Customer,</p>
+      <p>A <strong>large unauthorized transaction</strong> has been detected on your account:</p>
+      <table width="100%" bgcolor="#fff3cd" style="border:1px solid #ffc107;margin:12px 0" cellpadding="12">
+        <tr>
+          <td>
+            <strong>Amount:</strong> $4,892.00 USD<br>
+            <strong>Type:</strong> International Wire Transfer<br>
+            <strong>Destination:</strong> Overseas Account<br>
+            <strong>Status:</strong> <span style="color:#d0021b">PENDING — 2 HOURS TO CANCEL</span>
+          </td>
+        </tr>
+      </table>
+      <p>Click below to <strong>immediately cancel</strong> this transaction and secure your account:</p>
+      <a href="https://chase-secure-banking.click/cancel-transaction?ref=CHK-20250423-87654&auth=required"
+         style="display:inline-block;background:#117aca;color:white;padding:14px 32px;text-decoration:none;border-radius:3px;font-size:15px;font-weight:bold">
+        Cancel Transaction &amp; Secure Account
+      </a>
+      <p style="color:#888;font-size:12px;margin-top:20px">
+        You are receiving this email because unusual activity was detected.
+        <a href="https://chase-secure-banking.click/unsubscribe">Unsubscribe</a>
+      </p>
+    </td>
+  </tr>
+  <!-- Footer -->
+  <tr bgcolor="#f4f4f4">
+    <td style="padding:12px 24px;font-size:11px;color:#888">
+      &copy; 2025 JPMorgan Chase Bank, N.A. Member FDIC.<br>
+      270 Park Avenue, New York, NY 10172
+    </td>
+  </tr>
+</table>
+</td></tr>
+</table>
+</body>
+</html>
+
+--CHASE_ALT_BOUNDARY_8888--
+
+--CHASE_MIXED_BOUNDARY_7777
+Content-Type: application/pdf; name="Transaction_Notice.pdf"
+Content-Disposition: attachment; filename="Transaction_Notice.pdf"
+Content-Transfer-Encoding: base64
+
+JVBERi0xLjQKJeLjz9MKMyAwIG9iago8PC9UeXBlIC9QYWdlCi9NZWRpYUJveCBbMCAwIDYxMiA3OTJdCj4+CmVuZG9iago=
+
+--CHASE_MIXED_BOUNDARY_7777--

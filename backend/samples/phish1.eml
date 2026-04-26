@@ -1,0 +1,63 @@
+From: PayPal Security <security-alert@gmail-paypal.tk>
+To: victim@example.com
+Subject: [Action Required] Your PayPal account has been limited
+Date: Mon, 21 Apr 2025 09:15:33 +0000
+MIME-Version: 1.0
+Content-Type: multipart/alternative; boundary="===============1234567890=="
+Message-ID: <20250421091533.12345@gmail-paypal.tk>
+Return-Path: bounces@spammerhost.ru
+Reply-To: steal-creds@evilbox.cf
+Received: from spammerhost.ru (spammerhost.ru [192.168.1.1])
+        by mx1.gmail-paypal.tk (Postfix) with ESMTP id ABC123
+        for <victim@example.com>; Mon, 21 Apr 2025 09:15:33 +0000
+
+--===============1234567890==
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: quoted-printable
+
+Dear Valued Customer,
+
+We have noticed unusual activity on your PayPal account and we have temporarily =
+limited your account access.
+
+To restore your account access you must verify your information within 24 HOURS =
+or your account will be permanently suspended.
+
+Click here to verify: http://paypa1-secure-login.tk/verify?token=abc123&ref=em=
+ail
+
+If you do not verify within 24 hours your account will be closed and any pending =
+payments will be forfeited.
+
+PayPal Security Team
+PayPal, Inc.
+
+--===============1234567890==
+Content-Type: text/html; charset="utf-8"
+Content-Transfer-Encoding: quoted-printable
+
+<!DOCTYPE html>
+<html>
+<head><title>PayPal Account Limited</title></head>
+<body style="font-family:Arial,sans-serif;background:#f5f5f5">
+<div style="max-width:600px;margin:0 auto;background:#fff;padding:20px">
+  <img src="https://paypa1-secure-login.tk/images/paypal-logo.png" alt="PayPal" width="120">
+  <h2 style="color:#003087">Your account has been limited</h2>
+  <p>Dear Valued Customer,</p>
+  <p>We have detected <strong>suspicious activity</strong> on your account.
+  Your account access has been <strong style="color:red">temporarily limited</strong>.</p>
+  <p>To restore full access please verify your identity:</p>
+  <a href="http://paypa1-secure-login.tk/verify?token=abc123&ref=email"
+     style="background:#003087;color:#fff;padding:12px 24px;text-decoration:none;display:inline-block;border-radius:4px">
+    Verify My Account
+  </a>
+  <p style="color:#999;font-size:12px">
+    If you don't verify within <strong>24 hours</strong> your account will be <strong>permanently suspended</strong>.
+  </p>
+  <hr>
+  <p style="color:#999;font-size:11px">PayPal, Inc. | 2211 North First Street, San Jose, CA 95131</p>
+</div>
+</body>
+</html>
+
+--===============1234567890==--

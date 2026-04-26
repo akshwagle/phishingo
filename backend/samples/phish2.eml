@@ -1,0 +1,81 @@
+From: Microsoft Account Team <no-reply@microsoft-account-support.xyz>
+To: user@company.com
+Subject: Unusual sign-in activity detected on your Microsoft account
+Date: Tue, 22 Apr 2025 14:32:17 +0000
+MIME-Version: 1.0
+Content-Type: multipart/alternative; boundary="MS_BOUNDARY_8675309"
+Message-ID: <2025042214321.ms.fake@microsoft-account-support.xyz>
+Return-Path: <no-reply@microsoft-account-support.xyz>
+Reply-To: <harvest@free-collect.cf>
+Received: from mail.microsoft-account-support.xyz ([45.33.32.156])
+        by inbound.company.com with ESMTP
+        for <user@company.com>; Tue, 22 Apr 2025 14:32:17 +0000
+X-Mailer: PHPMailer 6.5.0
+X-Originating-IP: 45.33.32.156
+
+--MS_BOUNDARY_8675309
+Content-Type: text/plain; charset="utf-8"
+
+Dear Microsoft Account User,
+
+We detected a sign-in attempt to your Microsoft account from an unrecognized device.
+
+Location: Moscow, Russia
+Device: Unknown Android Device
+Time: April 22, 2025 at 14:28 UTC
+
+If this was you, you can safely ignore this email.
+
+If this was NOT you, your account may be compromised. Please verify your identity immediately:
+
+http://microsoft-account-support.xyz/security/verify?session=8f3a2b1c&action=protect
+
+You have 48 hours to respond before your account is locked.
+
+Microsoft Account Security
+Microsoft Corporation
+
+--MS_BOUNDARY_8675309
+Content-Type: text/html; charset="utf-8"
+
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8"><title>Microsoft Security Alert</title></head>
+<body style="margin:0;padding:0;font-family:'Segoe UI',Arial,sans-serif;background-color:#f2f2f2">
+  <table width="100%" cellpadding="0" cellspacing="0">
+    <tr><td align="center" style="padding:20px 0">
+      <table width="600" cellpadding="0" cellspacing="0" style="background:#ffffff;border:1px solid #ddd">
+        <tr><td style="background:#0078d4;padding:16px 24px">
+          <img src="https://microsoft-account-support.xyz/img/mslogo.png" width="108" alt="Microsoft" />
+        </td></tr>
+        <tr><td style="padding:24px">
+          <h1 style="color:#0078d4;font-size:20px;margin:0 0 16px">Unusual sign-in activity</h1>
+          <p>We detected something unusual about a recent sign-in to your Microsoft account.</p>
+          <table style="background:#fdf3f3;border-left:4px solid #d13438;padding:12px;width:100%" cellpadding="0" cellspacing="0">
+            <tr><td>
+              <strong>Country/region:</strong> Russia<br>
+              <strong>IP address:</strong> 91.108.56.173<br>
+              <strong>Date:</strong> April 22, 2025<br>
+              <strong>Platform:</strong> Unknown Android
+            </td></tr>
+          </table>
+          <p>If you did not sign in recently, we strongly recommend you verify your account immediately to prevent unauthorized access.</p>
+          <a href="http://microsoft-account-support.xyz/security/verify?session=8f3a2b1c&action=protect"
+             style="display:inline-block;background:#0078d4;color:#ffffff;padding:12px 28px;text-decoration:none;border-radius:2px;font-weight:bold">
+            Review Recent Activity
+          </a>
+          <p style="color:#666;font-size:13px;margin-top:24px">
+            To opt out of these security notifications, visit your
+            <a href="http://microsoft-account-support.xyz/settings">account settings</a>.
+          </p>
+        </td></tr>
+        <tr><td style="background:#f2f2f2;padding:12px 24px;font-size:11px;color:#888">
+          Microsoft Corporation, One Microsoft Way, Redmond, WA 98052
+        </td></tr>
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>
+
+--MS_BOUNDARY_8675309--
