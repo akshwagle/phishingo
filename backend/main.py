@@ -891,66 +891,128 @@ async def page_scan(req: PageScanRequest) -> dict[str, Any]:
     }
 
 
-# ── Safe Mails: Gmail IMAP monitor + WhatsApp alerts ─────────────────────────
+# ── Safe Mails: Google OAuth + Gmail API + WhatsApp alerts ───────────────────
 
-import imaplib
-import email as emaillib
-from email.header import decode_header as email_decode_header
 import base64
+import email as emaillib
 import threading
+import urllib.parse
+from email.header import decode_header as _decode_header
 
 _safe_mail_sessions: dict[str, dict] = {}  # session_id → config
+_oauth_pending: dict[str, dict] = {}        # state → {whatsapp}
 
-class SafeMailConnectRequest(BaseModel):
-    email: str
-    app_password: str
-    whatsapp: str
+GOOGLE_SCOPES = ["https://www.googleapis.com/auth/gmail.readonly"]
+
+_GOOGLE_CLIENT_ID     = os.getenv("GOOGLE_CLIENT_ID", "")
+_GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET", "")
+_GOOGLE_REDIRECT_URI  = os.getenv(
+    "GOOGLE_REDIRECT_URI",
+    "https://phishingo-production.up.railway.app/api/safe-mails/callback",
+)
+_FRONTEND_URL = os.getenv("FRONTEND_URL", "https://phishingo-zk3c.vercel.app")
+
+
+class SafeMailAuthRequest(BaseModel):
+    whatsapp: str  # user's WhatsApp number
 
 
 class SafeMailDisconnectRequest(BaseModel):
     session_id: str
 
 
-@app.post("/api/safe-mails/connect")
-async def safe_mails_connect(req: SafeMailConnectRequest) -> dict:
-    """Connect Gmail via IMAP and start monitoring for phishing emails."""
-    # Validate IMAP connection first
+@app.post("/api/safe-mails/auth-url")
+async def safe_mails_auth_url(req: SafeMailAuthRequest) -> dict:
+    """Step 1: generate the Google OAuth URL. Frontend redirects user there."""
+    if not _GOOGLE_CLIENT_ID:
+        raise HTTPException(status_code=503, detail="Google OAuth not configured on this server.")
+
+    state = str(uuid.uuid4())
+    _oauth_pending[state] = {"whatsapp": req.whatsapp}
+
+    params = {
+        "client_id":     _GOOGLE_CLIENT_ID,
+        "redirect_uri":  _GOOGLE_REDIRECT_URI,
+        "response_type": "code",
+        "scope":         " ".join(GOOGLE_SCOPES),
+        "access_type":   "offline",
+        "prompt":        "consent",
+        "state":         state,
+    }
+    auth_url = "https://accounts.google.com/o/oauth2/v2/auth?" + urllib.parse.urlencode(params)
+    return {"auth_url": auth_url, "state": state}
+
+
+@app.get("/api/safe-mails/callback")
+async def safe_mails_callback(code: str = "", state: str = "", error: str = "") -> Any:
+    """Step 2: Google redirects here after user consents. Exchange code for tokens."""
+    from fastapi.responses import RedirectResponse
+
+    pending = _oauth_pending.pop(state, None)
+    if error or not code:
+        return RedirectResponse(f"{_FRONTEND_URL}/safe-mails?error={error or 'cancelled'}")
+    if not pending:
+        return RedirectResponse(f"{_FRONTEND_URL}/safe-mails?error=invalid_state")
+
+    # Exchange code for access + refresh tokens
+    import httpx as _httpx
     try:
-        mail = imaplib.IMAP4_SSL("imap.gmail.com", 993)
-        mail.login(req.email, req.app_password)
-        mail.logout()
-    except imaplib.IMAP4.error as e:
-        raise HTTPException(status_code=400, detail=f"Gmail login failed: {str(e)}. Check your App Password.")
+        token_resp = await _httpx.AsyncClient().post(
+            "https://oauth2.googleapis.com/token",
+            data={
+                "code":          code,
+                "client_id":     _GOOGLE_CLIENT_ID,
+                "client_secret": _GOOGLE_CLIENT_SECRET,
+                "redirect_uri":  _GOOGLE_REDIRECT_URI,
+                "grant_type":    "authorization_code",
+            },
+        )
+        tokens = token_resp.json()
+        if "error" in tokens:
+            raise ValueError(tokens["error"])
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Could not reach Gmail: {str(e)}")
+        logger.error(f"Safe Mails: token exchange failed: {e}")
+        return RedirectResponse(f"{_FRONTEND_URL}/safe-mails?error=token_exchange_failed")
+
+    # Get user's email via userinfo
+    try:
+        info_resp = await _httpx.AsyncClient().get(
+            "https://www.googleapis.com/oauth2/v2/userinfo",
+            headers={"Authorization": f"Bearer {tokens['access_token']}"},
+        )
+        user_info = info_resp.json()
+        gmail = user_info.get("email", "unknown")
+    except Exception:
+        gmail = "connected"
 
     session_id = str(uuid.uuid4())
     _safe_mail_sessions[session_id] = {
-        "email": req.email,
-        "app_password": req.app_password,
-        "whatsapp": req.whatsapp,
-        "active": True,
-        "last_uid": None,
-        "alerts_sent": 0,
+        "email":         gmail,
+        "whatsapp":      pending["whatsapp"],
+        "access_token":  tokens.get("access_token", ""),
+        "refresh_token": tokens.get("refresh_token", ""),
+        "active":        True,
+        "alerts_sent":   0,
         "emails_scanned": 0,
+        "seen_ids":      set(),
     }
 
-    # Start background polling thread
-    thread = threading.Thread(
-        target=_gmail_poll_loop,
-        args=(session_id,),
-        daemon=True,
-    )
-    thread.start()
+    # Start background polling
+    threading.Thread(target=_gmail_poll_loop, args=(session_id,), daemon=True).start()
+    logger.info(f"Safe Mails: Google OAuth connected {gmail} → {pending['whatsapp']}")
 
-    logger.info(f"Safe Mails: started monitoring {req.email} → {req.whatsapp}")
-    return {"session_id": session_id, "email": req.email, "status": "connected"}
+    redirect = (
+        f"{_FRONTEND_URL}/safe-mails"
+        f"?status=connected&session={session_id}&email={urllib.parse.quote(gmail)}"
+    )
+    return RedirectResponse(redirect)
 
 
 @app.post("/api/safe-mails/disconnect")
 async def safe_mails_disconnect(req: SafeMailDisconnectRequest) -> dict:
-    if req.session_id in _safe_mail_sessions:
-        _safe_mail_sessions[req.session_id]["active"] = False
+    s = _safe_mail_sessions.get(req.session_id)
+    if s:
+        s["active"] = False
         del _safe_mail_sessions[req.session_id]
     return {"status": "disconnected"}
 
@@ -961,17 +1023,81 @@ async def safe_mails_status(session_id: str) -> dict:
     if not s:
         raise HTTPException(status_code=404, detail="Session not found")
     return {
-        "active": s["active"],
-        "email": s["email"],
-        "alerts_sent": s["alerts_sent"],
-        "emails_scanned": s["emails_scanned"],
+        "active":          s["active"],
+        "email":           s["email"],
+        "alerts_sent":     s["alerts_sent"],
+        "emails_scanned":  s["emails_scanned"],
     }
 
 
+# ── Background Gmail polling ──────────────────────────────────────────────────
+
+def _refresh_access_token(sess: dict) -> bool:
+    """Refresh the access token using the refresh token."""
+    if not sess.get("refresh_token"):
+        return False
+    try:
+        import urllib.request, json as _json
+        data = urllib.parse.urlencode({
+            "client_id":     _GOOGLE_CLIENT_ID,
+            "client_secret": _GOOGLE_CLIENT_SECRET,
+            "refresh_token": sess["refresh_token"],
+            "grant_type":    "refresh_token",
+        }).encode()
+        req = urllib.request.Request("https://oauth2.googleapis.com/token", data=data, method="POST")
+        with urllib.request.urlopen(req, timeout=10) as r:
+            tokens = _json.loads(r.read())
+        if "access_token" in tokens:
+            sess["access_token"] = tokens["access_token"]
+            return True
+    except Exception as e:
+        logger.warning(f"Safe Mails: token refresh failed: {e}")
+    return False
+
+
+def _gmail_api_get(sess: dict, path: str, params: dict | None = None) -> dict | None:
+    """Make a Gmail API request with automatic token refresh."""
+    import urllib.request, json as _json
+    base = "https://gmail.googleapis.com/gmail/v1"
+    qs = ("?" + urllib.parse.urlencode(params)) if params else ""
+    url = f"{base}{path}{qs}"
+
+    for attempt in range(2):
+        try:
+            req = urllib.request.Request(url, headers={"Authorization": f"Bearer {sess['access_token']}"})
+            with urllib.request.urlopen(req, timeout=15) as r:
+                return _json.loads(r.read())
+        except urllib.error.HTTPError as e:
+            if e.code == 401 and attempt == 0:
+                if _refresh_access_token(sess):
+                    continue
+            logger.warning(f"Safe Mails: Gmail API error {e.code} for {path}")
+            return None
+        except Exception as ex:
+            logger.warning(f"Safe Mails: Gmail API exception: {ex}")
+            return None
+    return None
+
+
+def _extract_email_body(payload: dict) -> str:
+    """Recursively extract plain-text body from Gmail message payload."""
+    mime = payload.get("mimeType", "")
+    if mime == "text/plain":
+        data = payload.get("body", {}).get("data", "")
+        try:
+            return base64.urlsafe_b64decode(data + "==").decode("utf-8", errors="ignore")
+        except Exception:
+            return ""
+    if "parts" in payload:
+        for part in payload["parts"]:
+            text = _extract_email_body(part)
+            if text:
+                return text
+    return ""
+
+
 def _gmail_poll_loop(session_id: str) -> None:
-    """Background thread: poll Gmail every 2 minutes, analyze new emails, send WhatsApp if suspicious."""
     import time as _time
-    seen_uids: set = set()
 
     while True:
         sess = _safe_mail_sessions.get(session_id)
@@ -979,94 +1105,65 @@ def _gmail_poll_loop(session_id: str) -> None:
             break
 
         try:
-            mail = imaplib.IMAP4_SSL("imap.gmail.com", 993)
-            mail.login(sess["email"], sess["app_password"])
-            mail.select("INBOX")
+            # List unread messages from last 10 minutes
+            msgs_data = _gmail_api_get(
+                sess,
+                f"/users/me/messages",
+                {"q": "is:unread newer_than:10m", "maxResults": "10"},
+            )
+            messages = (msgs_data or {}).get("messages", [])
 
-            # Get recent unread emails (last 10)
-            _, msgs = mail.search(None, "UNSEEN")
-            uid_list = msgs[0].split() if msgs[0] else []
-
-            for uid in uid_list[-10:]:
-                uid_str = uid.decode()
-                if uid_str in seen_uids:
+            for msg_ref in messages:
+                msg_id = msg_ref.get("id", "")
+                if not msg_id or msg_id in sess["seen_ids"]:
                     continue
-                seen_uids.add(uid_str)
+                sess["seen_ids"].add(msg_id)
 
-                try:
-                    _, data = mail.fetch(uid, "(RFC822)")
-                    raw = data[0][1] if data and data[0] else None
-                    if not raw:
-                        continue
+                # Fetch full message
+                msg_data = _gmail_api_get(sess, f"/users/me/messages/{msg_id}", {"format": "full"})
+                if not msg_data:
+                    continue
 
-                    msg = emaillib.message_from_bytes(raw)
-                    subject_raw, enc = email_decode_header(msg.get("Subject", ""))[0]
-                    subject = subject_raw.decode(enc or "utf-8") if isinstance(subject_raw, bytes) else (subject_raw or "")
-                    sender = msg.get("From", "")
+                headers = {h["name"]: h["value"] for h in msg_data.get("payload", {}).get("headers", [])}
+                sender  = headers.get("From", "")
+                subject = headers.get("Subject", "(no subject)")
+                body    = _extract_email_body(msg_data.get("payload", {}))
 
-                    # Extract body
-                    body = ""
-                    if msg.is_multipart():
-                        for part in msg.walk():
-                            if part.get_content_type() == "text/plain":
-                                try:
-                                    body = part.get_payload(decode=True).decode("utf-8", errors="ignore")
-                                    break
-                                except Exception:
-                                    pass
-                    else:
-                        try:
-                            body = msg.get_payload(decode=True).decode("utf-8", errors="ignore")
-                        except Exception:
-                            body = str(msg.get_payload())
+                sess["emails_scanned"] += 1
+                content = f"From: {sender}\nSubject: {subject}\n\n{body[:3000]}"
 
-                    # Build content for analysis
-                    content = f"From: {sender}\nSubject: {subject}\n\n{body[:3000]}"
-                    sess["emails_scanned"] += 1
+                result = _sync_analyze_email(content)
+                verdict = result.get("verdict", "UNKNOWN")
+                score   = result.get("risk_score", 0)
 
-                    # Run analysis synchronously (we're in a thread)
-                    import httpx
-                    backend_url = os.getenv("BACKEND_URL", "http://localhost:8080")
-                    # Use internal API call
-                    result = _sync_analyze(content)
+                logger.info(f"Safe Mails [{sess['email']}]: {sender[:40]} → {verdict} ({score})")
 
-                    verdict = result.get("verdict", "UNKNOWN")
-                    score = result.get("risk_score", 0)
-
-                    logger.info(f"Safe Mails: {sender} → {verdict} ({score})")
-
-                    if score >= 30 and verdict in ("SUSPICIOUS", "DANGEROUS"):
-                        sess["alerts_sent"] += 1
-                        red_flags = result.get("red_flags", [])
-                        flag_text = "\n".join(
-                            f"- {f if isinstance(f, str) else f.get('description', '')}"
-                            for f in red_flags[:3]
-                        )
-                        _send_whatsapp_alert(
-                            to=sess["whatsapp"],
-                            message=(
-                                f"*PhishFilter Pro Alert*\n\n"
-                                f"*{verdict} EMAIL DETECTED*\n\n"
-                                f"From: {sender[:60]}\n"
-                                f"Subject: {subject[:80]}\n\n"
-                                f"Risk score: *{score}/100*\n"
-                                + (f"Red flags:\n{flag_text}\n" if flag_text else "")
-                                + f"\nStay safe — do not click any links in this email."
-                            ),
-                        )
-                except Exception as e:
-                    logger.warning(f"Safe Mails: error processing email {uid_str}: {e}")
-
-            mail.logout()
-
+                if score >= 30 and verdict in ("SUSPICIOUS", "DANGEROUS"):
+                    sess["alerts_sent"] += 1
+                    flags = result.get("red_flags", [])
+                    flag_text = "\n".join(
+                        f"- {f if isinstance(f, str) else f.get('description', '')}"
+                        for f in flags[:3]
+                    )
+                    _send_whatsapp_alert(
+                        to=sess["whatsapp"],
+                        message=(
+                            f"*PhishFilter Pro Alert*\n\n"
+                            f"*{verdict} EMAIL DETECTED*\n\n"
+                            f"From: {sender[:60]}\n"
+                            f"Subject: {subject[:80]}\n\n"
+                            f"Risk score: *{score}/100*\n"
+                            + (f"\nRed flags:\n{flag_text}\n" if flag_text else "")
+                            + "\nDo NOT click any links in this email."
+                        ),
+                    )
         except Exception as e:
             logger.warning(f"Safe Mails: poll error for {session_id}: {e}")
 
-        _time.sleep(120)  # Poll every 2 minutes
+        _time.sleep(120)
 
 
-def _sync_analyze(content: str) -> dict:
-    """Synchronous version of LLM analysis for background thread use."""
+def _sync_analyze_email(content: str) -> dict:
     try:
         import asyncio as _asyncio
         loop = _asyncio.new_event_loop()
@@ -1079,22 +1176,17 @@ def _sync_analyze(content: str) -> dict:
 
 
 def _send_whatsapp_alert(to: str, message: str) -> None:
-    """Send WhatsApp message via Twilio. Falls back to logging if not configured."""
-    twilio_sid = os.getenv("TWILIO_ACCOUNT_SID")
+    twilio_sid   = os.getenv("TWILIO_ACCOUNT_SID")
     twilio_token = os.getenv("TWILIO_AUTH_TOKEN")
-    twilio_from = os.getenv("TWILIO_WHATSAPP_FROM", "whatsapp:+14155238886")
+    twilio_from  = os.getenv("TWILIO_WHATSAPP_FROM", "whatsapp:+14155238886")
 
     if not twilio_sid or not twilio_token:
-        logger.info(f"[Safe Mails] WhatsApp alert (no Twilio configured): {message[:100]}")
+        logger.info(f"[Safe Mails] WhatsApp alert (Twilio not configured): {message[:120]}")
         return
-
     try:
         from twilio.rest import Client
-        client = Client(twilio_sid, twilio_token)
-        client.messages.create(
-            body=message,
-            from_=twilio_from,
-            to=f"whatsapp:{to}",
+        Client(twilio_sid, twilio_token).messages.create(
+            body=message, from_=twilio_from, to=f"whatsapp:{to}"
         )
         logger.info(f"[Safe Mails] WhatsApp alert sent to {to}")
     except Exception as e:
