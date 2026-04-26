@@ -1,207 +1,396 @@
-import { getStats, getSettings, saveSettings, getWhitelist, addToWhitelist, removeFromWhitelist } from '../lib/storage.js';
-import { C } from '../lib/constants.js';
+// PhishFilter Pro — Popup
+// Uses module type; lib files imported inline for MV3 compatibility
 
-const log = (...a) => console.log(C.LOG_PREFIX, '[popup]', ...a);
+const PROD_URL = 'https://phishingo-production.up.railway.app';
+const DEFAULT_BACKEND = PROD_URL;
 
-// ── Boot ─────────────────────────────────────────────────────────────────────
-document.addEventListener('DOMContentLoaded', async () => {
-  await Promise.all([
-    loadCurrentTabStatus(),
-    loadStats(),
-    loadEngineStatus(),
-    loadSettings(),
-  ]);
-  attachListeners();
-  log('Popup ready');
-});
+// circumference for r=24: 2π*24 ≈ 150.796
+const CIRC = 150.796;
 
-// ── Current tab status ────────────────────────────────────────────────────────
-async function loadCurrentTabStatus() {
-  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  if (!tab) return;
+// ── DOM refs ───────────────────────────────────────────────────────────────
+const $ = id => document.getElementById(id);
 
-  const url    = tab.url || '';
-  const domain = url ? (() => { try { return new URL(url).hostname; } catch { return url; } })() : '—';
-  document.getElementById('page-domain').textContent = domain;
+const dom = {
+  statusDot: $('status-dot'),
+  statusLabel: $('status-label'),
+  domain: $('page-domain'),
+  verdictBadge: $('verdict-badge'),
+  summary: $('page-summary'),
+  scoreRing: $('score-ring'),
+  scoreNum: $('score-num'),
+  scanPulse: $('scan-pulse'),
+  flagsPreview: $('flags-preview'),
+  btnScanPage: $('btn-scan-page'),
+  btnViewDetails: $('btn-view-details'),
+  statBlocked: $('stat-blocked'),
+  statLinks: $('stat-links'),
+  statPasswords: $('stat-passwords'),
+  statPhishes: $('stat-phishes'),
+  engQwen: $('eng-qwen'),
+  engKimi: $('eng-kimi'),
+  engDs: $('eng-ds'),
+  engGem: $('eng-gem'),
+  engGpt: $('eng-gpt'),
+  engineNote: $('engine-note'),
+  activitySection: $('activity-section'),
+  activityList: $('activity-list'),
+  settingsToggle: $('settings-toggle'),
+  settingsBody: $('settings-body'),
+  settingsChevron: $('settings-chevron'),
+  settingBackend: $('setting-backend'),
+  settingSensitivity: $('setting-sensitivity'),
+  settingAutoblock: $('setting-autoblock'),
+  btnSaveSettings: $('btn-save-settings'),
+  btnWhitelist: $('btn-whitelist'),
+  btnClipboard: $('btn-clipboard'),
+  btnDashboard: $('btn-dashboard'),
+  whitelistModal: $('whitelist-modal'),
+  whitelistTextarea: $('whitelist-textarea'),
+  whitelistSave: $('whitelist-save'),
+  whitelistCancel: $('whitelist-cancel'),
+  whitelistClose: $('whitelist-close'),
+};
 
-  // Skip non-web URLs
-  if (!url || url.startsWith('chrome://') || url.startsWith('chrome-extension://') || url.startsWith('about:')) {
-    setPageVerdict('SAFE', 0);
-    document.getElementById('page-summary').textContent = 'Browser page — not scanned.';
-    return;
-  }
-
-  // Try cached result first
-  chrome.runtime.sendMessage({ action: 'getTabResult' }, (cached) => {
-    if (!chrome.runtime.lastError && cached) {
-      setPageVerdict(cached.verdict, cached.risk_score, cached.brand_impersonated);
-      return;
-    }
-
-    // No cache — kick off a live scan and show progress
-    document.getElementById('page-summary').textContent = 'Scanning...';
-    document.getElementById('verdict-badge').textContent = '...';
-    document.getElementById('score-num').textContent = '…';
-
-    chrome.runtime.sendMessage({ action: 'scanTabUrl', url, tabId: tab.id }, (result) => {
-      if (chrome.runtime.lastError || !result) {
-        setPageVerdict('UNKNOWN', null);
-        return;
-      }
-      setPageVerdict(result.verdict, result.risk_score, result.brand_impersonated);
+// ── Helpers ────────────────────────────────────────────────────────────────
+function getBackendUrl() {
+  return new Promise(resolve => {
+    chrome.storage.local.get(['backendUrl'], d => {
+      resolve((d.backendUrl || DEFAULT_BACKEND).replace(/\/$/, ''));
     });
   });
 }
 
-function setPageVerdict(verdict, score, brand) {
-  const badge  = document.getElementById('verdict-badge');
-  const circle = document.getElementById('score-circle');
-  const sumEl  = document.getElementById('page-summary');
-  const numEl  = document.getElementById('score-num');
-
-  const cls = verdict === 'DANGEROUS' ? 'dangerous' : verdict === 'SUSPICIOUS' ? 'suspicious' : verdict === 'SAFE' ? 'safe' : '';
-  badge.textContent = verdict;
-  badge.className   = `verdict-badge ${cls}`;
-  circle.className  = `score-circle ${cls}`;
-  numEl.textContent = score != null ? score : '?';
-
-  sumEl.textContent =
-    verdict === 'DANGEROUS'  ? `Phishing detected${brand ? ` — impersonates ${brand}` : ''}. Do not enter any info.` :
-    verdict === 'SUSPICIOUS' ? `This site looks suspicious${brand ? ` — may impersonate ${brand}` : ''}. Be cautious.` :
-    verdict === 'SAFE'       ? 'No threats detected on this page.' :
-    'Analysis pending — click "Scan this page" to check now.';
+function verdictColor(v) {
+  return { SAFE: '#16a34a', SUSPICIOUS: '#d97706', DANGEROUS: '#dc2626' }[v] || '#6b7280';
 }
 
-// ── Stats ─────────────────────────────────────────────────────────────────────
+function setScoreRing(score, verdict) {
+  const filled = Math.min(100, Math.max(0, score));
+  const dash = (filled / 100) * CIRC;
+  dom.scoreRing.setAttribute('stroke-dasharray', `${dash} ${CIRC}`);
+  const col = verdictColor(verdict);
+  dom.scoreRing.style.stroke = col;
+  dom.scoreNum.style.fill = col;
+  dom.scoreNum.textContent = score;
+}
+
+function setVerdict(verdict, score, summary, redFlags, lastScanId) {
+  // hide pulse, show result
+  dom.scanPulse.style.display = 'none';
+
+  dom.verdictBadge.textContent = verdict || 'UNKNOWN';
+  dom.verdictBadge.className = `verdict-badge ${verdict || 'UNKNOWN'}`;
+
+  setScoreRing(score || 0, verdict);
+
+  dom.summary.textContent = summary || (verdict === 'SAFE' ? 'No threats detected on this page.' :
+    verdict === 'SUSPICIOUS' ? 'This page looks suspicious. Be cautious.' :
+    verdict === 'DANGEROUS' ? 'Phishing site detected! Do not enter any information.' :
+    'Scan this page to check for threats.');
+
+  // Red flags
+  if (redFlags && redFlags.length && verdict !== 'SAFE') {
+    dom.flagsPreview.style.display = 'block';
+    dom.flagsPreview.innerHTML = redFlags.slice(0, 3).map(f => {
+      const text = typeof f === 'string' ? f : (f.description || f.flag || JSON.stringify(f));
+      return `<div class="flag-item">${text.slice(0, 80)}</div>`;
+    }).join('');
+  } else {
+    dom.flagsPreview.style.display = 'none';
+  }
+
+  // View report button
+  if (lastScanId) {
+    dom.btnViewDetails.style.display = 'inline-flex';
+    dom.btnViewDetails.onclick = () => {
+      chrome.tabs.create({ url: `https://phishingo-zk3c.vercel.app/analyze/${lastScanId}` });
+    };
+  } else {
+    dom.btnViewDetails.style.display = 'none';
+  }
+}
+
+function showScanning() {
+  dom.scanPulse.style.display = 'flex';
+  dom.verdictBadge.textContent = 'SCANNING';
+  dom.verdictBadge.className = 'verdict-badge SCANNING';
+  dom.scoreNum.textContent = '?';
+  dom.scoreRing.setAttribute('stroke-dasharray', `0 ${CIRC}`);
+  dom.scoreRing.style.stroke = '#1a56db';
+  dom.summary.textContent = 'Analyzing this page...';
+  dom.flagsPreview.style.display = 'none';
+  dom.btnViewDetails.style.display = 'none';
+}
+
 async function loadStats() {
-  const stats = await getStats();
-  document.getElementById('stat-blocked').textContent   = stats.sitesBlocked;
-  document.getElementById('stat-links').textContent     = stats.linksScanned;
-  document.getElementById('stat-passwords').textContent = stats.passwordsProtected;
-  document.getElementById('stat-phishes').textContent   = stats.phishesCaught;
+  chrome.storage.local.get(['sitesBlocked', 'linksScanned', 'passwordsProtected', 'phishesCaught'], d => {
+    dom.statBlocked.textContent = d.sitesBlocked || 0;
+    dom.statLinks.textContent = d.linksScanned || 0;
+    dom.statPasswords.textContent = d.passwordsProtected || 0;
+    const phishes = d.phishesCaught || 0;
+    dom.statPhishes.textContent = phishes;
+    if (phishes > 0) dom.statPhishes.classList.add('danger');
+  });
 }
 
-// ── Engine status ──────────────────────────────────────────────────────────────
-async function loadEngineStatus() {
-  const statusEl   = document.getElementById('status-dot');
-  const statusLabel = document.getElementById('status-label');
+async function loadActivity() {
+  chrome.storage.local.get(['recentThreats', 'recent_threats'], d => {
+    const threats = d.recentThreats || d.recent_threats || [];
+    if (threats.length === 0) { dom.activitySection.style.display = 'none'; return; }
+    dom.activitySection.style.display = 'block';
+    dom.activityList.innerHTML = threats.slice(0, 4).map(t => `
+      <div class="activity-item">
+        <span class="activity-verdict ${t.verdict}">${t.verdict}</span>
+        <span class="activity-domain">${t.domain || t.url || 'unknown'}</span>
+        <span class="activity-time">${t.time || 'recent'}</span>
+      </div>
+    `).join('');
+  });
+}
 
-  const { backendStatus, lastHealthCheck } = await chrome.storage.local.get(['backendStatus', 'lastHealthCheck']);
-  const isOnline = backendStatus === 'online'
-    || (lastHealthCheck && Date.now() - lastHealthCheck < 6 * 60 * 1000);
-
-  statusEl.className   = `status-dot ${isOnline ? 'online' : 'offline'}`;
-  statusLabel.textContent = isOnline ? 'Online' : 'Offline';
-
-  // Ping health now for freshness
+async function checkHealth() {
   try {
-    const health = await chrome.runtime.sendMessage({ action: 'getHealth' });
-    if (health) {
-      statusEl.className   = 'status-dot online';
-      statusLabel.textContent = 'Online';
-      // Activate all engine dots when backend is alive
-      ['eng-qwen','eng-kimi','eng-ds','eng-gem','eng-gpt'].forEach(id => {
-        const dot = document.getElementById(id);
-        if (dot) dot.className = 'engine-dot active';
-      });
-    } else {
-      statusEl.className   = 'status-dot offline';
-      statusLabel.textContent = 'Offline';
-    }
-  } catch { /* ignore */ }
-}
+    const base = await getBackendUrl();
+    const res = await fetch(`${base}/api/health`, { signal: AbortSignal.timeout(4000) });
+    if (res.ok) {
+      const data = await res.json();
+      dom.statusDot.className = 'status-dot online';
+      dom.statusLabel.textContent = 'Online';
 
-// ── Settings ──────────────────────────────────────────────────────────────────
-async function loadSettings() {
-  const s = await getSettings();
-  document.getElementById('setting-backend').value       = s.backendUrl || '';
-  document.getElementById('setting-sensitivity').value   = s.sensitivity;
-  document.getElementById('setting-autoblock').checked   = s.autoBlock;
-  document.getElementById('setting-sound').checked       = s.soundAlerts;
-}
-
-async function saveAllSettings() {
-  await saveSettings({
-    backendUrl:  document.getElementById('setting-backend').value.trim(),
-    sensitivity: document.getElementById('setting-sensitivity').value,
-    autoBlock:   document.getElementById('setting-autoblock').checked,
-    soundAlerts: document.getElementById('setting-sound').checked,
-  });
-  const btn = document.getElementById('btn-save-settings');
-  btn.textContent = 'Saved!';
-  setTimeout(() => { btn.textContent = 'Save settings'; }, 1500);
-}
-
-// ── Whitelist modal ───────────────────────────────────────────────────────────
-async function openWhitelistModal() {
-  const list = await getWhitelist();
-  document.getElementById('whitelist-textarea').value = list.join('\n');
-  document.getElementById('whitelist-modal').style.display = 'flex';
-}
-
-async function saveWhitelist() {
-  const raw  = document.getElementById('whitelist-textarea').value;
-  const domains = raw.split('\n').map(d => d.trim().toLowerCase()).filter(Boolean);
-  await chrome.storage.local.set({ whitelist: domains });
-  document.getElementById('whitelist-modal').style.display = 'none';
-}
-
-// ── Listeners ─────────────────────────────────────────────────────────────────
-function attachListeners() {
-  // Settings toggle
-  document.getElementById('settings-toggle').addEventListener('click', () => {
-    const body = document.getElementById('settings-body');
-    const chevron = document.getElementById('settings-chevron');
-    const open = body.style.display !== 'none';
-    body.style.display    = open ? 'none' : 'flex';
-    chevron.style.transform = open ? '' : 'rotate(180deg)';
-  });
-
-  // Scan page
-  document.getElementById('btn-scan-page').addEventListener('click', async () => {
-    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-    if (!tab?.id) return;
-    chrome.tabs.sendMessage(tab.id, { action: 'extractPageData' });
-    window.close();
-  });
-
-  // View details
-  document.getElementById('btn-view-details').addEventListener('click', async () => {
-    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-    const url   = tab?.url ? `${C.PRODUCTION_APP}/?scan=${encodeURIComponent(tab.url)}` : C.PRODUCTION_APP;
-    chrome.tabs.create({ url });
-    window.close();
-  });
-
-  // Clipboard scan
-  document.getElementById('btn-clipboard').addEventListener('click', async () => {
-    try {
-      const text = await navigator.clipboard.readText();
-      const match = text.match(/https?:\/\/[^\s]+/);
-      if (match) {
-        chrome.runtime.sendMessage({ action: 'checkUrl', url: match[0] }, (result) => {
-          if (result) setPageVerdict(result.verdict, result.risk_score, result.brand_impersonated);
+      // Engine status — use LLM model results if available
+      const models = data.models || {};
+      const engines = [
+        { id: 'eng-qwen', keys: ['qwen3-32b', 'qwen'] },
+        { id: 'eng-kimi', keys: ['kimi-k2', 'kimi'] },
+        { id: 'eng-ds',   keys: ['deepseek-r1', 'deepseek'] },
+        { id: 'eng-gem',  keys: ['gemini-2.5-flash', 'gemini'] },
+        { id: 'eng-gpt',  keys: ['gpt-oss-120b', 'gpt'] },
+      ];
+      let okCount = 0;
+      engines.forEach(e => {
+        const el = $(e.id);
+        const ok = e.keys.some(k => {
+          const found = Object.keys(models).find(mk => mk.toLowerCase().includes(k));
+          return found && models[found] === 'ok';
         });
-      }
-    } catch { /* clipboard permission denied */ }
-  });
+        // If no model info, mark all green if backend is up
+        const alive = ok || Object.keys(models).length === 0;
+        if (alive) okCount++;
+        el.className = `eng-dot ${alive ? 'ok' : 'err'}`;
+      });
+      dom.engineNote.textContent = `${okCount}/5 active`;
+    } else {
+      throw new Error('not ok');
+    }
+  } catch {
+    dom.statusDot.className = 'status-dot offline';
+    dom.statusLabel.textContent = 'Offline';
+    dom.engineNote.textContent = 'unreachable';
+    ['eng-qwen','eng-kimi','eng-ds','eng-gem','eng-gpt'].forEach(id => {
+      const el = $(id);
+      if (el) el.className = 'eng-dot';
+    });
+  }
+}
 
-  // Open dashboard
-  document.getElementById('btn-dashboard').addEventListener('click', () => {
-    chrome.tabs.create({ url: C.PRODUCTION_APP });
+async function loadCurrentTab() {
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (!tab || !tab.url) {
+      setVerdict('UNKNOWN', 0, 'No active tab detected.');
+      return;
+    }
+
+    // Extract and display domain
+    let domain = 'Unknown';
+    try { domain = new URL(tab.url).hostname; } catch {}
+    dom.domain.textContent = domain;
+
+    // Skip internal pages
+    if (tab.url.startsWith('chrome://') || tab.url.startsWith('chrome-extension://') ||
+        tab.url.startsWith('about:') || tab.url.startsWith('edge://')) {
+      setVerdict('UNKNOWN', 0, 'Cannot scan browser internal pages.');
+      return;
+    }
+
+    // Try to get cached result from background
+    chrome.runtime.sendMessage({ action: 'getTabResult', tabId: tab.id }, (cached) => {
+      if (chrome.runtime.lastError) {
+        // Service worker not ready, trigger scan directly
+        triggerLiveScan(tab.url, tab.id);
+        return;
+      }
+      if (cached && cached.verdict && cached.verdict !== 'UNKNOWN') {
+        displayResult(cached);
+      } else {
+        // No cached result, trigger live scan
+        triggerLiveScan(tab.url, tab.id);
+      }
+    });
+  } catch (err) {
+    console.error('[PhishFilter] Popup loadCurrentTab error:', err);
+    setVerdict('UNKNOWN', 0, 'Error loading tab info.');
+  }
+}
+
+function triggerLiveScan(url, tabId) {
+  showScanning();
+  chrome.runtime.sendMessage({ action: 'scanTabUrl', url, tabId }, (result) => {
+    if (chrome.runtime.lastError || !result) {
+      // Try direct API call as fallback
+      directApiScan(url);
+      return;
+    }
+    if (result.offline) {
+      setVerdict('UNKNOWN', 0, 'Backend offline. Check your connection.');
+    } else {
+      displayResult(result);
+    }
+  });
+}
+
+async function directApiScan(url) {
+  try {
+    const base = await getBackendUrl();
+    const res = await fetch(`${base}/api/url-quick`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url }),
+      signal: AbortSignal.timeout(8000),
+    });
+    if (res.ok) {
+      const data = await res.json();
+      displayResult(data);
+    } else {
+      setVerdict('UNKNOWN', 0, 'Scan failed. Try again.');
+    }
+  } catch {
+    setVerdict('UNKNOWN', 0, 'Cannot reach backend. Check settings.');
+  }
+}
+
+function displayResult(r) {
+  const v = r.verdict || 'UNKNOWN';
+  const score = r.risk_score || 0;
+  const summary = r.summary || r.brand_impersonated
+    ? `${v === 'SAFE' ? 'No threats' : 'Threat detected'}: ${r.brand_impersonated || ''} — risk ${score}/100`
+    : null;
+  const flags = r.red_flags || [];
+  setVerdict(v, score, summary, flags, r.job_id);
+}
+
+// ── Settings ───────────────────────────────────────────────────────────────
+function loadSettings() {
+  chrome.storage.local.get(['backendUrl', 'sensitivity', 'autoblock'], d => {
+    dom.settingBackend.value = d.backendUrl || DEFAULT_BACKEND;
+    dom.settingSensitivity.value = d.sensitivity || 'medium';
+    dom.settingAutoblock.checked = d.autoblock !== false;
+  });
+}
+
+dom.settingsToggle.addEventListener('click', () => {
+  const open = dom.settingsBody.style.display !== 'none';
+  dom.settingsBody.style.display = open ? 'none' : 'block';
+  dom.settingsChevron.style.transform = open ? '' : 'rotate(180deg)';
+});
+
+dom.btnSaveSettings.addEventListener('click', () => {
+  chrome.storage.local.set({
+    backendUrl: dom.settingBackend.value.trim() || DEFAULT_BACKEND,
+    sensitivity: dom.settingSensitivity.value,
+    autoblock: dom.settingAutoblock.checked,
+  }, () => {
+    dom.btnSaveSettings.textContent = 'Saved ✓';
+    setTimeout(() => { dom.btnSaveSettings.textContent = 'Save'; }, 1500);
+  });
+});
+
+// ── Whitelist ──────────────────────────────────────────────────────────────
+dom.btnWhitelist.addEventListener('click', () => {
+  chrome.storage.local.get(['whitelist'], d => {
+    dom.whitelistTextarea.value = (d.whitelist || []).join('\n');
+    dom.whitelistModal.style.display = 'flex';
+  });
+});
+function closeWhitelist() { dom.whitelistModal.style.display = 'none'; }
+dom.whitelistClose.addEventListener('click', closeWhitelist);
+dom.whitelistCancel.addEventListener('click', closeWhitelist);
+dom.whitelistSave.addEventListener('click', () => {
+  const list = dom.whitelistTextarea.value.split('\n').map(s => s.trim()).filter(Boolean);
+  chrome.storage.local.set({ whitelist: list }, () => { closeWhitelist(); });
+});
+
+// ── Scan page button ───────────────────────────────────────────────────────
+dom.btnScanPage.addEventListener('click', async () => {
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (!tab) return;
+
+  dom.btnScanPage.disabled = true;
+  dom.btnScanPage.textContent = 'Scanning...';
+
+  // Inject content script if not already there, then send message
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      files: ['content/universal.js'],
+    });
+  } catch { /* already injected */ }
+
+  chrome.tabs.sendMessage(tab.id, { action: 'startPageScan' }, () => {
+    if (chrome.runtime.lastError) {
+      // Fallback: open full analysis on web app
+      chrome.tabs.create({ url: `https://phishingo-zk3c.vercel.app/?url=${encodeURIComponent(tab.url)}` });
+    }
+    dom.btnScanPage.disabled = false;
+    dom.btnScanPage.innerHTML = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg> Scan this page`;
     window.close();
   });
+});
 
-  // Save settings
-  document.getElementById('btn-save-settings').addEventListener('click', saveAllSettings);
+// ── Clipboard scan ─────────────────────────────────────────────────────────
+dom.btnClipboard.addEventListener('click', async () => {
+  try {
+    // Request clipboard from active tab via content script
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    chrome.tabs.sendMessage(tab.id, { action: 'getClipboard' }, async (text) => {
+      if (chrome.runtime.lastError || !text) {
+        alert('Could not read clipboard. Try clicking inside the page first.');
+        return;
+      }
+      // Check if it looks like a URL
+      let url = text.trim();
+      if (!url.startsWith('http')) url = 'https://' + url;
+      try { new URL(url); } catch { alert('No URL found in clipboard.'); return; }
 
-  // Whitelist
-  document.getElementById('btn-whitelist').addEventListener('click', openWhitelistModal);
-  document.getElementById('whitelist-close').addEventListener('click', () => {
-    document.getElementById('whitelist-modal').style.display = 'none';
-  });
-  document.getElementById('whitelist-cancel').addEventListener('click', () => {
-    document.getElementById('whitelist-modal').style.display = 'none';
-  });
-  document.getElementById('whitelist-save').addEventListener('click', saveWhitelist);
-}
+      dom.btnClipboard.textContent = 'Scanning...';
+      const base = await getBackendUrl();
+      const res = await fetch(`${base}/api/url-quick`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url }),
+        signal: AbortSignal.timeout(8000),
+      });
+      const data = await res.json();
+      const v = data.verdict || 'UNKNOWN';
+      alert(`Clipboard URL: ${url}\n\nVerdict: ${v}\nRisk score: ${data.risk_score || 0}/100\n${data.brand_impersonated ? `Brand: ${data.brand_impersonated}` : ''}`);
+      dom.btnClipboard.textContent = 'Scan from clipboard';
+    });
+  } catch (err) {
+    console.error('[PhishFilter] Clipboard scan error:', err);
+  }
+});
+
+// ── Dashboard ──────────────────────────────────────────────────────────────
+dom.btnDashboard.addEventListener('click', () => {
+  chrome.tabs.create({ url: 'https://phishingo-zk3c.vercel.app' });
+});
+
+// ── Init ───────────────────────────────────────────────────────────────────
+(async () => {
+  showScanning();
+  loadSettings();
+  loadStats();
+  loadActivity();
+  checkHealth();
+  loadCurrentTab();
+})();

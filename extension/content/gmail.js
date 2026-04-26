@@ -1,311 +1,421 @@
+// PhishFilter Pro — Gmail content script
+// Uses URL hash polling (Gmail uses #inbox/THREADID) for reliable detection
 (function () {
   'use strict';
-  if (window.__pfpGmailLoaded) return;
-  window.__pfpGmailLoaded = true;
 
-  const LOG = '[PhishFilter:Gmail]';
-  const log  = (...a) => console.log(LOG, ...a);
+  const BACKEND = (() => {
+    return new Promise(resolve => {
+      chrome.storage.local.get(['backendUrl'], d =>
+        resolve((d.backendUrl || 'https://phishingo-production.up.railway.app').replace(/\/$/, ''))
+      );
+    });
+  })();
 
-  const scannedThreads = new Set(); // thread IDs we've already scanned this session
-  const PROD_APP       = 'https://phishingo-zk3c.vercel.app';
-  const BTN_CLASS      = 'pfp-scan-btn';
+  // ── State ───────────────────────────────────────────────────────────────
+  let lastHash = '';
+  let lastThreadId = '';
+  let scanInFlight = false;
+  let scanButtonInjected = false;
 
-  // ─────────────────────────────────────────────────────────────────────────────
-  // DOM helpers — Gmail changes its class names; we use multiple fallbacks
-  // ─────────────────────────────────────────────────────────────────────────────
-  const $  = (s, r = document) => r.querySelector(s);
-  const $$ = (s, r = document) => [...r.querySelectorAll(s)];
+  // ── Hash polling — most reliable way to detect Gmail email opens ────────
+  function pollHash() {
+    const hash = location.hash;
+    if (hash === lastHash) return;
+    lastHash = hash;
 
-  function getThreadId() {
-    // data-thread-perm-id is the most stable identifier
-    const el = $('[data-thread-perm-id]') || $('[data-thread-id]') || $('[data-legacy-thread-id]');
-    return el?.getAttribute('data-thread-perm-id')
-        || el?.getAttribute('data-thread-id')
-        || el?.getAttribute('data-legacy-thread-id')
-        || null;
-  }
-
-  function getEmailBodyEl() {
-    for (const sel of ['.a3s.aiL', '.ii.gt .a3s', '.a3s', '[data-message-id] .a3s']) {
-      const el = $(sel);
-      if (el?.innerText?.trim()) return el;
+    // Gmail email view: #inbox/THREADID, #sent/THREADID, #spam/THREADID, etc.
+    const threadMatch = hash.match(/\/([\da-f]{16,}|thread-[^/]+)$/i);
+    if (threadMatch && threadMatch[1] !== lastThreadId) {
+      lastThreadId = threadMatch[1];
+      // Wait for Gmail to render email body
+      setTimeout(() => tryInjectAndScan(), 1200);
     }
-    return null;
   }
 
-  function getSender() {
-    const el = $('.gD[email]') || $('[data-hovercard-id]') || $('[email]');
-    return el?.getAttribute('email') || el?.getAttribute('data-hovercard-id') || '';
+  setInterval(pollHash, 400);
+
+  // Also use MutationObserver as a fallback
+  let mutationTimer = null;
+  const observer = new MutationObserver(() => {
+    clearTimeout(mutationTimer);
+    mutationTimer = setTimeout(tryInjectScanButton, 800);
+  });
+
+  // Start observing once Gmail main container exists
+  function startObserving() {
+    const container = document.querySelector('[role="main"]') || document.body;
+    observer.observe(container, { childList: true, subtree: true });
   }
 
-  function getSubject() {
-    return ($('h2.hP') || $('title'))?.innerText?.trim() || document.title || '';
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', startObserving);
+  } else {
+    startObserving();
   }
 
-  function getReplyToolbar() {
-    // Gmail toolbar that holds Reply / Forward / More — try multiple selectors
-    for (const sel of ['.ade', '.hc .hl', '[data-tooltip="Reply"]', '[aria-label="Reply"]']) {
-      const el = $(sel);
-      if (el) return el.closest('[role="toolbar"]') || el.parentElement || el;
-    }
-    return null;
-  }
-
-  // ─────────────────────────────────────────────────────────────────────────────
-  // Build email content string to send to backend
-  // ─────────────────────────────────────────────────────────────────────────────
-  function buildEmailContent() {
-    const bodyEl  = getEmailBodyEl();
-    if (!bodyEl) return null;
-
-    const body    = bodyEl.innerText.trim();
-    const sender  = getSender();
-    const subject = getSubject();
-    const links   = $$('a[href]', bodyEl)
-      .map(a => a.href)
-      .filter(h => h && !h.startsWith('mailto:') && !h.startsWith('javascript:') && !h.startsWith('https://mail.google'));
-
-    // Gather as many real headers as Gmail exposes in the UI
-    const headerRows = $$('.ajz,.ajA,.ajy,.ajx', document);
-    const headers = headerRows.map(r => r.innerText.trim()).filter(Boolean).join('\n');
-
-    // Suspicious structural signals
-    const hasPasswordField = $$('input[type="password"]', bodyEl).length > 0;
-    const hasForms         = $$('form', bodyEl).length > 0;
-
-    return [
-      `From: ${sender}`,
-      `Subject: ${subject}`,
-      headers ? `\nHeaders:\n${headers}` : '',
-      `\nBody:\n${body.slice(0, 4000)}`,
-      links.length ? `\nLinks found:\n${links.slice(0, 30).join('\n')}` : '',
-      hasPasswordField ? '\n[ALERT: email body contains password input fields — high risk]' : '',
-      hasForms         ? '\n[ALERT: email body contains HTML form elements]' : '',
-    ].join('');
-  }
-
-  // ─────────────────────────────────────────────────────────────────────────────
-  // Inline verdict banner injected at the TOP of the email body
-  // ─────────────────────────────────────────────────────────────────────────────
-  function removeBanner(bodyEl) {
-    bodyEl?.closest('.ii.gt, .adn.ads')?.querySelector('.pfp-banner')?.remove();
-    bodyEl?.parentElement?.querySelector('.pfp-banner')?.remove();
-  }
-
-  function showLoadingBanner(bodyEl) {
-    removeBanner(bodyEl);
-    const parent = bodyEl.parentElement;
-    const div = document.createElement('div');
-    div.className = 'pfp-banner';
-    div.style.cssText = bannerBaseStyle('#f5f0e8', '#9ca3af');
-    div.innerHTML = `
-      <div style="display:flex;align-items:center;gap:10px">
-        <div class="pfp-spinner" style="width:14px;height:14px;border:2px solid #d1d5db;border-top-color:#4f46e5;border-radius:50%;animation:pfpSpin .7s linear infinite"></div>
-        <span style="${monoStyle()}font-size:12px;font-weight:700;color:#5a5a5a">PhishFilter is scanning this email...</span>
-      </div>
-      <style>@keyframes pfpSpin{to{transform:rotate(360deg)}}</style>
-    `;
-    parent.insertBefore(div, bodyEl);
-  }
-
-  function showResultBanner(bodyEl, result) {
-    removeBanner(bodyEl);
-    const verdict  = result?.verdict || 'UNKNOWN';
-    const score    = result?.risk_score ?? 0;
-    const flags    = (result?.red_flags || []).slice(0, 4);
-    const summary  = result?.summary || '';
-    const jobId    = result?.job_id;
-    const auth     = result?.authentication || {};
-
-    const palettes = {
-      DANGEROUS:  { bg: '#fff0f0', border: '#dc2626', text: '#7f1d1d', badge: '#dc2626', badgeText: '#fff', icon: '⛔' },
-      SUSPICIOUS: { bg: '#fffbee', border: '#d97706', text: '#78350f', badge: '#d97706', badgeText: '#fff', icon: '⚠️' },
-      SAFE:       { bg: '#f0fff6', border: '#16a34a', text: '#14532d', badge: '#16a34a', badgeText: '#fff', icon: '✅' },
-      UNKNOWN:    { bg: '#f5f5f5', border: '#9ca3af', text: '#374151', badge: '#9ca3af', badgeText: '#fff', icon: '?' },
-    };
-    const p = palettes[verdict] || palettes.UNKNOWN;
-
-    const authBadges = Object.entries({
-      SPF: auth.spf, DKIM: auth.dkim, DMARC: auth.dmarc,
-    }).map(([k, v]) => {
-      if (!v || v === 'unknown') return '';
-      const ok = v === 'pass';
-      return `<span style="display:inline-block;padding:1px 6px;border-radius:4px;font-size:9px;font-weight:700;margin-right:4px;
-        background:${ok ? '#f0fff6' : '#fff0f0'};color:${ok ? '#16a34a' : '#dc2626'};
-        border:1px solid ${ok ? '#86efac' : '#fca5a5'};font-family:'Space Mono',monospace">${k} ${ok ? '✓' : '✗'}</span>`;
-    }).join('');
-
-    const parent = bodyEl.parentElement;
-    const div = document.createElement('div');
-    div.className = 'pfp-banner';
-    div.style.cssText = bannerBaseStyle(p.bg, p.border);
-    div.innerHTML = `
-      <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:10px">
-        <div style="flex:1">
-          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:6px">
-            <span style="${monoStyle()}background:${p.badge};color:${p.badgeText};padding:3px 10px;
-              border-radius:5px;font-size:11px;font-weight:700">${p.icon} ${verdict}</span>
-            <span style="${monoStyle()}font-size:13px;font-weight:700;color:${p.text}">Risk score: ${score}/100</span>
-            ${authBadges ? `<span style="margin-left:4px">${authBadges}</span>` : ''}
-          </div>
-          ${summary ? `<div style="${monoStyle()}font-size:11px;color:${p.text};line-height:1.6;margin-bottom:6px">${escHtml(summary)}</div>` : ''}
-          ${flags.length ? `
-            <div style="margin-top:4px">
-              ${flags.map(f => `
-                <div style="${monoStyle()}display:flex;gap:6px;font-size:10px;color:${p.text};margin-bottom:2px;line-height:1.5">
-                  <span style="color:${p.badge};font-weight:700;flex-shrink:0">•</span>
-                  <span>${escHtml(typeof f === 'string' ? f : (f.description || JSON.stringify(f)))}</span>
-                </div>
-              `).join('')}
-            </div>
-          ` : ''}
-          ${jobId ? `
-            <div style="margin-top:8px">
-              <a href="${PROD_APP}/analyze/${jobId}" target="_blank"
-                 style="${monoStyle()}color:${p.badge};font-size:10px;font-weight:700;text-decoration:underline">
-                View full forensic report (10 engines + 5 AI models) →
-              </a>
-            </div>
-          ` : ''}
-        </div>
-        <div style="display:flex;flex-direction:column;align-items:flex-end;gap:6px;flex-shrink:0">
-          <button class="pfp-dismiss" style="${monoStyle()}background:none;border:none;cursor:pointer;
-            color:#9ca3af;font-size:16px;line-height:1;padding:0">✕</button>
-          <button class="pfp-rescan" style="${monoStyle()}background:none;border:1.5px solid ${p.border};
-            color:${p.text};border-radius:6px;padding:3px 8px;font-size:10px;font-weight:700;cursor:pointer">
-            Rescan
-          </button>
-        </div>
-      </div>
-    `;
-
-    div.querySelector('.pfp-dismiss').onclick  = () => div.remove();
-    div.querySelector('.pfp-rescan').onclick   = () => {
-      div.remove();
-      scanCurrentEmail(true);
-    };
-
-    parent.insertBefore(div, bodyEl);
-  }
-
-  function bannerBaseStyle(bg, border) {
-    return `all:initial;display:block;margin:0 0 14px 0;padding:14px 16px;
-      background:${bg};border:2px solid ${border};border-radius:12px;
-      box-shadow:3px 3px 0 ${border}44;`;
-  }
-
-  function monoStyle() {
-    return "font-family:'Space Mono','Courier New',monospace;";
-  }
-
-  // ─────────────────────────────────────────────────────────────────────────────
-  // Scan button injection into Gmail toolbar
-  // ─────────────────────────────────────────────────────────────────────────────
-  function injectScanButton(toolbar) {
-    if (toolbar.querySelector(`.${BTN_CLASS}`)) return;
-    const btn = document.createElement('button');
-    btn.className = BTN_CLASS;
-    btn.title = 'PhishFilter: Scan this email for phishing';
-    btn.style.cssText = `
-      all:initial;display:inline-flex;align-items:center;gap:5px;padding:5px 12px;
-      margin:0 4px;border:2px solid #1a1a1a;border-radius:8px;background:#4f46e5;
-      color:#fff;font-family:'Space Mono',monospace;font-size:11px;font-weight:700;
-      cursor:pointer;box-shadow:2px 2px 0 #1a1a1a;line-height:1;
-    `;
-    btn.innerHTML = `
-      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-        <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
-      </svg>
-      Scan email
-    `;
-    btn.addEventListener('click', () => scanCurrentEmail(true));
-    try { toolbar.insertBefore(btn, toolbar.firstChild); }
-    catch { toolbar.appendChild(btn); }
-    log('Scan button injected');
-  }
-
-  // ─────────────────────────────────────────────────────────────────────────────
-  // Core scan function
-  // ─────────────────────────────────────────────────────────────────────────────
-  function scanCurrentEmail(manual = false) {
-    const bodyEl = getEmailBodyEl();
-    if (!bodyEl) { log('No email body found'); return; }
-
-    const content = buildEmailContent();
-    if (!content?.trim()) { log('Could not extract email content'); return; }
-
-    log('Scanning email', manual ? '(manual)' : '(auto)');
-    showLoadingBanner(bodyEl);
-
-    chrome.runtime.sendMessage(
-      { action: 'analyzeContent', content, inputType: 'email' },
-      (result) => {
-        if (chrome.runtime.lastError) {
-          log('Analysis error:', chrome.runtime.lastError.message);
-          removeBanner(bodyEl);
-          return;
-        }
-        showResultBanner(bodyEl, result);
-        log('Scan complete:', result?.verdict, result?.risk_score);
-      }
+  // ── Email body selectors (Gmail's DOM) ────────────────────────────────
+  function getEmailContainer() {
+    // Gmail renders emails in elements with role="listitem" or specific data attrs
+    return (
+      document.querySelector('[data-message-id]') ||
+      document.querySelector('.ii.gt') ||
+      document.querySelector('[role="listitem"] .a3s') ||
+      document.querySelector('.a3s.aiL') ||
+      document.querySelector('.gs') // email thread
     );
   }
 
-  // ─────────────────────────────────────────────────────────────────────────────
-  // MutationObserver — detect email opens and auto-scan
-  // ─────────────────────────────────────────────────────────────────────────────
-  let debounceTimer = null;
-
-  function onDomChange() {
-    clearTimeout(debounceTimer);
-    debounceTimer = setTimeout(handleEmailView, 600);
+  function getEmailBody() {
+    // Try multiple selectors in order of specificity
+    const selectors = [
+      '.a3s.aiL', // most common
+      '.a3s',
+      '.ii.gt .a3s',
+      '[role="listitem"] .a3s',
+      '.gmail_quote', // quoted text
+    ];
+    for (const sel of selectors) {
+      const el = document.querySelector(sel);
+      if (el && el.innerText.trim().length > 10) return el;
+    }
+    return null;
   }
 
-  function handleEmailView() {
-    // Inject scan button into toolbar
-    const toolbar = getReplyToolbar();
-    if (toolbar && !toolbar.querySelector(`.${BTN_CLASS}`)) {
-      injectScanButton(toolbar);
+  function getReplyToolbar() {
+    // Gmail toolbar above emails — try to find a place to inject our button
+    return (
+      document.querySelector('.ade') ||
+      document.querySelector('[gh="mtb"]') ||
+      document.querySelector('.G-atb') ||
+      document.querySelector('[data-tooltip="More"]')?.closest('.G-Ni') ||
+      document.querySelector('.iH')
+    );
+  }
+
+  // ── Extract email content ──────────────────────────────────────────────
+  function extractEmailContent() {
+    const bodyEl = getEmailBody();
+    const body = bodyEl ? bodyEl.innerText.trim().slice(0, 5000) : '';
+
+    // Extract headers from the email view
+    const fromEl = document.querySelector('[email]') || document.querySelector('.gD');
+    const subjectEl = document.querySelector('[data-thread-perm-id]') ||
+                      document.querySelector('h2[data-legacy-thread-id]') ||
+                      document.querySelector('.hP');
+
+    const links = [];
+    if (bodyEl) {
+      bodyEl.querySelectorAll('a[href]').forEach(a => {
+        const href = a.href;
+        if (href && !href.startsWith('mailto:') && !href.startsWith('#')) {
+          links.push(href);
+        }
+      });
     }
 
-    // Auto-scan if this is a new thread
-    const threadId = getThreadId();
-    if (!threadId || scannedThreads.has(threadId)) return;
+    // Check for credential-harvesting forms (phishing red flag)
+    const forms = [];
+    if (bodyEl) {
+      bodyEl.querySelectorAll('input[type="password"], input[type="email"]').forEach(inp => {
+        forms.push({ type: inp.type, name: inp.name || '', placeholder: inp.placeholder || '' });
+      });
+    }
 
-    const bodyEl = getEmailBodyEl();
-    if (!bodyEl?.innerText?.trim()) return;
-
-    scannedThreads.add(threadId);
-    log('Auto-scanning thread:', threadId);
-    scanCurrentEmail(false);
+    return {
+      from: fromEl ? (fromEl.getAttribute('email') || fromEl.innerText.trim()) : '',
+      subject: subjectEl ? subjectEl.innerText.trim() : document.title.replace(' - Gmail', ''),
+      body: body || '[No body text extracted]',
+      links: links.slice(0, 30),
+      forms,
+    };
   }
 
-  // Start observing Gmail's main container
-  function startObserver() {
-    const root = $('[role="main"]') || $('.AO') || $('.bkK') || document.body;
-    const obs  = new MutationObserver(onDomChange);
-    obs.observe(root, { childList: true, subtree: true });
-    log('Observer attached to', root.tagName, root.className?.slice(0, 30));
-    // Run once immediately in case email is already open
-    setTimeout(handleEmailView, 1000);
+  // ── Inject banner ──────────────────────────────────────────────────────
+  function removeBanner() {
+    const existing = document.getElementById('pfp-gmail-banner-host');
+    if (existing) existing.remove();
   }
 
-  // Gmail's main panel may not exist on initial load — wait for it
-  if ($('[role="main"]') || $('.AO')) {
-    startObserver();
-  } else {
-    const bootstrap = new MutationObserver(() => {
-      if ($('[role="main"]') || $('.AO')) {
-        bootstrap.disconnect();
-        startObserver();
+  function showLoadingBanner(targetEl) {
+    removeBanner();
+    const host = document.createElement('div');
+    host.id = 'pfp-gmail-banner-host';
+    host.style.cssText = 'all:initial;display:block;';
+
+    const shadow = host.attachShadow({ mode: 'open' });
+    shadow.innerHTML = `
+      <style>
+        :host { display: block; }
+        .banner {
+          display: flex; align-items: center; gap: 10px;
+          background: #eff6ff; border: 2px solid #1a56db;
+          border-radius: 8px; padding: 10px 14px;
+          margin: 8px 0; font-family: 'Space Mono', monospace;
+          font-size: 12px; color: #1e40af;
+        }
+        .dot { width: 8px; height: 8px; border-radius: 50%; background: #1a56db;
+               animation: pulse 1s infinite; display: inline-block; }
+        .dot:nth-child(2) { animation-delay: .2s; }
+        .dot:nth-child(3) { animation-delay: .4s; }
+        @keyframes pulse { 0%,100%{opacity:.4} 50%{opacity:1} }
+      </style>
+      <div class="banner">
+        <span class="dot"></span><span class="dot"></span><span class="dot"></span>
+        <strong>PhishFilter</strong>&nbsp;scanning this email...
+      </div>
+    `;
+
+    if (targetEl && targetEl.parentNode) {
+      targetEl.parentNode.insertBefore(host, targetEl);
+    } else {
+      const body = getEmailBody();
+      if (body && body.parentNode) body.parentNode.insertBefore(host, body);
+    }
+    return host;
+  }
+
+  function showResultBanner(targetEl, result) {
+    removeBanner();
+
+    const v = result.verdict || 'UNKNOWN';
+    const score = result.risk_score || 0;
+    const colors = {
+      SAFE:       { bg: '#f0fdf4', border: '#16a34a', text: '#166534', badge: '#dcfce7', icon: '✅' },
+      SUSPICIOUS: { bg: '#fffbeb', border: '#d97706', text: '#92400e', badge: '#fef3c7', icon: '⚠️' },
+      DANGEROUS:  { bg: '#fef2f2', border: '#dc2626', text: '#991b1b', badge: '#fee2e2', icon: '🚨' },
+      UNKNOWN:    { bg: '#f9fafb', border: '#9ca3af', text: '#374151', badge: '#f3f4f6', icon: '❓' },
+    };
+    const c = colors[v] || colors.UNKNOWN;
+
+    const summary = result.summary || (v === 'SAFE' ? 'No phishing indicators found.' : 'Suspicious patterns detected.');
+    const flags = (result.red_flags || []).slice(0, 3);
+
+    const host = document.createElement('div');
+    host.id = 'pfp-gmail-banner-host';
+    host.style.cssText = 'all:initial;display:block;';
+    const shadow = host.attachShadow({ mode: 'open' });
+
+    const spfVal = result.authentication?.spf || result.spf || 'unknown';
+    const dkimVal = result.authentication?.dkim || result.dkim || 'unknown';
+    const dmarcVal = result.authentication?.dmarc || result.dmarc || 'unknown';
+
+    const authBadge = (label, val) => {
+      const ok = val === 'pass' || val === true || val === 'true';
+      return `<span style="padding:1px 6px;border-radius:3px;font-size:10px;font-weight:700;
+        background:${ok ? '#dcfce7' : '#fee2e2'};color:${ok ? '#166534' : '#991b1b'};
+        border:1px solid ${ok ? '#16a34a' : '#dc2626'}">${label} ${ok ? '✓' : '✗'}</span>`;
+    };
+
+    shadow.innerHTML = `
+      <style>
+        :host { display: block; }
+        .banner {
+          background: ${c.bg}; border: 2px solid ${c.border};
+          border-radius: 8px; padding: 12px 14px; margin: 8px 0;
+          font-family: 'Space Mono', monospace; font-size: 12px; color: ${c.text};
+        }
+        .top { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 6px; }
+        .left { display: flex; align-items: center; gap: 8px; }
+        .icon { font-size: 18px; line-height: 1; }
+        .title { font-weight: 700; font-size: 13px; }
+        .score-pill { padding: 2px 8px; border-radius: 12px; font-size: 10px; font-weight: 700;
+          background: ${c.badge}; color: ${c.text}; border: 1px solid ${c.border}; white-space: nowrap; }
+        .actions { display: flex; gap: 6px; }
+        .btn { padding: 3px 9px; border-radius: 5px; font-size: 10px; font-weight: 700;
+          cursor: pointer; border: 1.5px solid ${c.border}; background: ${c.badge};
+          color: ${c.text}; font-family: 'Space Mono', monospace; }
+        .btn:hover { opacity: 0.8; }
+        .btn-dismiss { background: transparent; border-color: transparent; color: ${c.text}; opacity: 0.6; }
+        .summary { font-size: 11px; line-height: 1.5; margin-bottom: 6px; }
+        .auth-row { display: flex; gap: 5px; flex-wrap: wrap; margin-bottom: 6px; }
+        .flags { border-top: 1px solid ${c.border}40; padding-top: 6px; margin-top: 2px; }
+        .flag { font-size: 10px; color: ${c.text}; padding: 2px 0; opacity: 0.85; }
+        .flag::before { content: '▸ '; }
+        .report-link { font-size: 10px; opacity: 0.7; text-decoration: underline; cursor: pointer; }
+      </style>
+      <div class="banner" id="pfp-banner">
+        <div class="top">
+          <div class="left">
+            <span class="icon">${c.icon}</span>
+            <span class="title">PhishFilter: ${v}</span>
+            <span class="score-pill">Score ${score}/100</span>
+          </div>
+          <div class="actions">
+            <button class="btn" id="rescan-btn">↻ Rescan</button>
+            <button class="btn btn-dismiss" id="dismiss-btn">✕</button>
+          </div>
+        </div>
+        <div class="summary">${summary}</div>
+        <div class="auth-row">
+          ${authBadge('SPF', spfVal)}
+          ${authBadge('DKIM', dkimVal)}
+          ${authBadge('DMARC', dmarcVal)}
+        </div>
+        ${flags.length ? `
+          <div class="flags">
+            ${flags.map(f => {
+              const t = typeof f === 'string' ? f : (f.description || f.flag || '');
+              return `<div class="flag">${t.slice(0, 100)}</div>`;
+            }).join('')}
+          </div>
+        ` : ''}
+        ${result.job_id ? `<div style="margin-top:6px"><a class="report-link" id="report-link">Open full forensic report →</a></div>` : ''}
+      </div>
+    `;
+
+    shadow.getElementById('dismiss-btn').addEventListener('click', () => host.remove());
+    shadow.getElementById('rescan-btn').addEventListener('click', () => runScan(true));
+    if (result.job_id) {
+      shadow.getElementById('report-link').addEventListener('click', () => {
+        chrome.runtime.sendMessage({ action: 'openTab', url: `https://phishingo-zk3c.vercel.app/analyze/${result.job_id}` });
+      });
+    }
+
+    if (targetEl && targetEl.parentNode) {
+      targetEl.parentNode.insertBefore(host, targetEl);
+    } else {
+      const body = getEmailBody();
+      if (body && body.parentNode) body.parentNode.insertBefore(host, body);
+    }
+  }
+
+  // ── Scan button in toolbar ─────────────────────────────────────────────
+  function tryInjectScanButton() {
+    if (document.getElementById('pfp-gmail-scan-btn')) return;
+    const toolbar = getReplyToolbar();
+    if (!toolbar) return;
+
+    scanButtonInjected = true;
+    const btn = document.createElement('button');
+    btn.id = 'pfp-gmail-scan-btn';
+    btn.title = 'PhishFilter: Scan this email';
+    btn.style.cssText = `
+      display: inline-flex; align-items: center; gap: 5px;
+      padding: 4px 10px; margin: 0 4px;
+      background: #eff6ff; color: #1e40af;
+      border: 1.5px solid #1a56db; border-radius: 6px;
+      font-size: 11px; font-weight: 700; cursor: pointer;
+      font-family: 'Space Mono', monospace;
+    `;
+    btn.innerHTML = '🛡 Scan email';
+    btn.addEventListener('click', () => runScan(true));
+    toolbar.appendChild(btn);
+  }
+
+  // ── Main scan function ─────────────────────────────────────────────────
+  async function runScan(force = false) {
+    if (scanInFlight && !force) return;
+    const bodyEl = getEmailBody();
+    if (!bodyEl) return;
+
+    // Check if banner already exists and not forcing
+    if (!force && document.getElementById('pfp-gmail-banner-host')) return;
+
+    scanInFlight = true;
+    const loadingHost = showLoadingBanner(bodyEl);
+
+    try {
+      const content = extractEmailContent();
+
+      // Build email text for analysis
+      const emailText = [
+        content.from ? `From: ${content.from}` : '',
+        content.subject ? `Subject: ${content.subject}` : '',
+        content.body,
+        content.links.length ? `\nLinks:\n${content.links.join('\n')}` : '',
+        content.forms.length ? '\n[WARNING: Email contains form inputs — phishing indicator]' : '',
+      ].filter(Boolean).join('\n');
+
+      const base = await BACKEND;
+      const res = await fetch(`${base}/api/analyze`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          content: emailText,
+          input_type: 'email',
+          metadata: {
+            from: content.from,
+            subject: content.subject,
+            url_count: content.links.length,
+            has_forms: content.forms.length > 0,
+          },
+        }),
+        signal: AbortSignal.timeout(30000),
+      });
+
+      loadingHost.remove();
+
+      if (res.ok) {
+        const data = await res.json();
+        showResultBanner(bodyEl, data);
+
+        // Save to recent threats if suspicious
+        if (data.verdict && data.verdict !== 'SAFE') {
+          saveToRecentThreats({
+            verdict: data.verdict,
+            domain: content.from || content.subject || 'Gmail email',
+            time: 'just now',
+          });
+        }
+
+        // Update stats
+        chrome.storage.local.get(['stats'], d => {
+          const s = d.stats || {};
+          s.links_scanned = (s.links_scanned || 0) + content.links.length + 1;
+          if (data.verdict === 'DANGEROUS') s.phishes_caught = (s.phishes_caught || 0) + 1;
+          chrome.storage.local.set({ stats: s });
+        });
+      } else {
+        loadingHost.remove();
+        showResultBanner(bodyEl, { verdict: 'UNKNOWN', risk_score: 0, summary: 'Scan failed — backend error.' });
       }
+    } catch (err) {
+      console.error('[PhishFilter] Gmail scan error:', err);
+      try { loadingHost.remove(); } catch {}
+      showResultBanner(bodyEl, { verdict: 'UNKNOWN', risk_score: 0, summary: 'Scan failed: ' + err.message });
+    } finally {
+      scanInFlight = false;
+    }
+  }
+
+  function saveToRecentThreats(threat) {
+    chrome.storage.local.get(['recent_threats'], d => {
+      const threats = d.recent_threats || [];
+      threats.unshift(threat);
+      chrome.storage.local.set({ recent_threats: threats.slice(0, 20) });
     });
-    bootstrap.observe(document.body, { childList: true, subtree: true });
   }
 
-  function escHtml(s) {
-    return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  // ── Main trigger: inject button + auto-scan ────────────────────────────
+  async function tryInjectAndScan() {
+    // Wait for email to render
+    let attempts = 0;
+    while (attempts < 10 && !getEmailBody()) {
+      await new Promise(r => setTimeout(r, 300));
+      attempts++;
+    }
+
+    const bodyEl = getEmailBody();
+    if (!bodyEl) {
+      console.log('[PhishFilter] Gmail: No email body found after waiting');
+      return;
+    }
+
+    tryInjectScanButton();
+    // Auto-scan every email
+    await runScan();
   }
 
-  log('Gmail content script loaded on', location.hostname);
+  // ── Listen for messages from popup ─────────────────────────────────────
+  chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+    if (msg.action === 'gmailScan') {
+      runScan(true).then(() => sendResponse({ ok: true })).catch(() => sendResponse({ ok: false }));
+      return true;
+    }
+    if (msg.action === 'openTab') {
+      chrome.tabs.create({ url: msg.url });
+    }
+  });
+
+  console.log('[PhishFilter] Gmail content script loaded — hash polling started');
 })();

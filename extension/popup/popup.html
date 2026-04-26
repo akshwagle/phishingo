@@ -2,15 +2,13 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>PhishFilter Pro</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="popup.css">
 </head>
 <body>
 
-<!-- Header -->
+<!-- ── Header ─────────────────────────────────────────────── -->
 <header class="hdr">
   <div class="hdr-left">
     <div class="shield-icon">
@@ -26,65 +24,122 @@
   </div>
 </header>
 
-<!-- Current page card -->
-<section class="page-card clay">
-  <div class="page-domain" id="page-domain">Loading current page...</div>
-  <div class="verdict-row">
-    <span class="verdict-badge" id="verdict-badge">UNKNOWN</span>
-    <div class="score-circle" id="score-circle">
-      <span id="score-num">?</span>
+<!-- ── Current page card ───────────────────────────────────── -->
+<section class="page-card">
+  <div class="page-top">
+    <div class="page-info">
+      <div class="page-domain" id="page-domain">Loading...</div>
+      <span class="verdict-badge" id="verdict-badge">SCANNING</span>
+      <div class="page-summary" id="page-summary">Analyzing this page...</div>
+    </div>
+    <!-- Animated SVG score ring -->
+    <div class="score-wrap">
+      <svg class="score-svg" viewBox="0 0 60 60">
+        <circle class="score-bg" cx="30" cy="30" r="24"/>
+        <circle class="score-ring" id="score-ring" cx="30" cy="30" r="24"
+          stroke-dasharray="0 151"
+          transform="rotate(-90 30 30)"/>
+        <text class="score-num" id="score-num" x="30" y="35">?</text>
+      </svg>
+      <div class="score-label">/ 100</div>
     </div>
   </div>
-  <div class="page-summary" id="page-summary">Checking this site...</div>
+
+  <!-- Scanning pulse (shown while loading) -->
+  <div class="scan-pulse" id="scan-pulse">
+    <div class="pulse-dot"></div><div class="pulse-dot"></div><div class="pulse-dot"></div>
+    <span>Scanning...</span>
+  </div>
+
+  <!-- Red flags preview (shown when result is ready) -->
+  <div class="flags-preview" id="flags-preview" style="display:none"></div>
+
   <div class="page-actions">
-    <button class="btn btn-primary" id="btn-scan-page">Scan this page</button>
-    <button class="btn btn-ghost" id="btn-view-details">View details</button>
+    <button class="btn btn-primary" id="btn-scan-page">
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+        <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+      </svg>
+      Scan this page
+    </button>
+    <button class="btn btn-ghost" id="btn-view-details">View report →</button>
   </div>
 </section>
 
-<!-- Stats grid -->
+<!-- ── Stats grid ─────────────────────────────────────────── -->
 <section class="stats-grid">
-  <div class="stat-card clay-sm">
-    <div class="stat-label">Blocked today</div>
-    <div class="stat-val" id="stat-blocked">0</div>
+  <div class="stat-card">
+    <div class="stat-icon" style="background:#fff0f0">🚫</div>
+    <div>
+      <div class="stat-val" id="stat-blocked">0</div>
+      <div class="stat-label">Blocked today</div>
+    </div>
   </div>
-  <div class="stat-card clay-sm">
-    <div class="stat-label">Links scanned</div>
-    <div class="stat-val" id="stat-links">0</div>
+  <div class="stat-card">
+    <div class="stat-icon" style="background:#fffbee">🔍</div>
+    <div>
+      <div class="stat-val" id="stat-links">0</div>
+      <div class="stat-label">Links scanned</div>
+    </div>
   </div>
-  <div class="stat-card clay-sm">
-    <div class="stat-label">Passwords saved</div>
-    <div class="stat-val" id="stat-passwords">0</div>
+  <div class="stat-card">
+    <div class="stat-icon" style="background:#f0fff6">🔒</div>
+    <div>
+      <div class="stat-val" id="stat-passwords">0</div>
+      <div class="stat-label">Passwords saved</div>
+    </div>
   </div>
-  <div class="stat-card clay-sm">
-    <div class="stat-label">Phishes caught</div>
-    <div class="stat-val danger" id="stat-phishes">0</div>
+  <div class="stat-card">
+    <div class="stat-icon" style="background:#fff0f0">🎣</div>
+    <div>
+      <div class="stat-val danger" id="stat-phishes">0</div>
+      <div class="stat-label">Phishes caught</div>
+    </div>
   </div>
 </section>
 
-<!-- Engine status -->
-<section class="engines-section">
-  <div class="engines-label">AI engines</div>
-  <div class="engines-row" id="engines-row">
-    <div class="engine-dot-wrap"><div class="engine-dot" id="eng-qwen"></div><div class="eng-name">Qwen3</div></div>
-    <div class="engine-dot-wrap"><div class="engine-dot" id="eng-kimi"></div><div class="eng-name">Kimi</div></div>
-    <div class="engine-dot-wrap"><div class="engine-dot" id="eng-ds"></div><div class="eng-name">DeepSeek</div></div>
-    <div class="engine-dot-wrap"><div class="engine-dot" id="eng-gem"></div><div class="eng-name">Gemini</div></div>
-    <div class="engine-dot-wrap"><div class="engine-dot" id="eng-gpt"></div><div class="eng-name">GPT-OSS</div></div>
+<!-- ── Engine status ──────────────────────────────────────── -->
+<section class="engine-section">
+  <div class="engine-hdr">
+    <span class="engine-title">AI engines</span>
+    <span class="engine-note" id="engine-note">checking...</span>
+  </div>
+  <div class="engine-row">
+    <div class="eng"><div class="eng-dot" id="eng-qwen"></div><div class="eng-name">Qwen3-32B</div></div>
+    <div class="eng"><div class="eng-dot" id="eng-kimi"></div><div class="eng-name">Kimi-K2</div></div>
+    <div class="eng"><div class="eng-dot" id="eng-ds"></div><div class="eng-name">DeepSeek</div></div>
+    <div class="eng"><div class="eng-dot" id="eng-gem"></div><div class="eng-name">Gemini</div></div>
+    <div class="eng"><div class="eng-dot" id="eng-gpt"></div><div class="eng-name">GPT-OSS</div></div>
   </div>
 </section>
 
-<!-- Quick actions -->
+<!-- ── Recent activity ───────────────────────────────────── -->
+<section class="activity-section" id="activity-section" style="display:none">
+  <div class="activity-title">Recent threats</div>
+  <div id="activity-list"></div>
+</section>
+
+<!-- ── Actions ───────────────────────────────────────────── -->
 <section class="actions-section">
-  <button class="btn btn-outline full-width" id="btn-clipboard">Scan from clipboard</button>
-  <button class="btn btn-outline full-width" id="btn-dashboard">Open dashboard</button>
+  <button class="btn btn-outline full-width" id="btn-clipboard">
+    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+      <rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/>
+    </svg>
+    Scan from clipboard
+  </button>
+  <button class="btn btn-outline full-width" id="btn-dashboard">
+    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+      <rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/>
+      <rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/>
+    </svg>
+    Open dashboard
+  </button>
 </section>
 
-<!-- Settings (collapsible) -->
+<!-- ── Settings ──────────────────────────────────────────── -->
 <section class="settings-section">
   <button class="settings-toggle" id="settings-toggle">
     Settings
-    <svg id="settings-chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+    <svg id="settings-chevron" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
       <polyline points="6 9 12 15 18 9"/>
     </svg>
   </button>
@@ -96,33 +151,31 @@
     <label class="setting-row">
       <span>Sensitivity</span>
       <select class="setting-select" id="setting-sensitivity">
-        <option value="low">Low</option>
-        <option value="medium" selected>Medium</option>
-        <option value="high">High</option>
+        <option value="low">Low (65+ = block)</option>
+        <option value="medium" selected>Medium (50+ = warn)</option>
+        <option value="high">High (30+ = warn)</option>
       </select>
     </label>
     <label class="setting-row">
       <span>Auto-block dangerous</span>
       <input type="checkbox" id="setting-autoblock" checked>
     </label>
-    <label class="setting-row">
-      <span>Sound alerts</span>
-      <input type="checkbox" id="setting-sound">
-    </label>
-    <button class="btn btn-subtle small" id="btn-save-settings">Save settings</button>
-    <button class="btn btn-ghost small" id="btn-whitelist">Manage whitelist</button>
+    <div style="display:flex;gap:6px;margin-top:4px">
+      <button class="btn btn-subtle small" id="btn-save-settings">Save</button>
+      <button class="btn btn-ghost small" id="btn-whitelist">Whitelist</button>
+    </div>
   </div>
 </section>
 
-<!-- Whitelist modal -->
+<!-- ── Whitelist modal ───────────────────────────────────── -->
 <div class="modal-overlay" id="whitelist-modal" style="display:none">
   <div class="modal clay">
     <div class="modal-hdr">
-      <span class="modal-title">Whitelist</span>
+      <span class="modal-title">Whitelist domains</span>
       <button class="close-btn" id="whitelist-close">✕</button>
     </div>
-    <p class="modal-sub">One domain per line. These sites will never be scanned.</p>
-    <textarea class="setting-input full-width" id="whitelist-textarea" rows="6" placeholder="example.com&#10;mybank.com"></textarea>
+    <p style="font-size:11px;color:#5a5a5a;margin-bottom:8px">One domain per line. These sites are never scanned.</p>
+    <textarea class="setting-input full-width" id="whitelist-textarea" rows="5" placeholder="example.com"></textarea>
     <div class="modal-actions">
       <button class="btn btn-primary small" id="whitelist-save">Save</button>
       <button class="btn btn-ghost small" id="whitelist-cancel">Cancel</button>
@@ -130,12 +183,12 @@
   </div>
 </div>
 
-<!-- Footer -->
+<!-- ── Footer ────────────────────────────────────────────── -->
 <footer class="footer">
-  <span>v1.0 · Powered by Hack Club AI</span>
+  <span>v1.0 · Hack Club AI</span>
   <div class="footer-links">
-    <a href="https://phishingo-zk3c.vercel.app" target="_blank">Help</a>
-    <a href="mailto:support@phishfilterpro.com">Report bug</a>
+    <a href="https://phishingo-zk3c.vercel.app/extension" target="_blank">Help</a>
+    <a href="mailto:support@phishfilterpro.com">Bug</a>
   </div>
 </footer>
 

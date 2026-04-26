@@ -60,10 +60,12 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
     if (result.verdict === C.DANGEROUS && autoBlock) {
       await incrementStat('sitesBlocked');
       await incrementStat('phishesCaught');
+      await saveRecentThreat(result, url);
       safeSend(tabId, { action: 'showBlockPage', result });
       chrome.action.setBadgeText({ tabId, text: result.risk_score.toString() });
       chrome.action.setBadgeBackgroundColor({ tabId, color: C.COLOR_DANGER });
     } else if (result.verdict === C.SUSPICIOUS) {
+      await saveRecentThreat(result, url);
       safeSend(tabId, { action: 'showSuspiciousBanner', result });
       chrome.action.setBadgeText({ tabId, text: result.risk_score.toString() });
       chrome.action.setBadgeBackgroundColor({ tabId, color: C.COLOR_WARNING });
@@ -106,10 +108,11 @@ async function handleMessage(msg, sender) {
     case 'getHealth':
       return getHealth();
 
-    case 'openApp': {
-      const url = msg.jobId
+    case 'openApp':
+    case 'openTab': {
+      const url = msg.url || (msg.jobId
         ? `${C.PRODUCTION_APP}/analyze/${msg.jobId}`
-        : C.PRODUCTION_APP;
+        : C.PRODUCTION_APP);
       await chrome.tabs.create({ url });
       return null;
     }
@@ -195,6 +198,24 @@ async function handleClipboard(url) {
 
 function safeSend(tabId, msg) {
   chrome.tabs.sendMessage(tabId, msg).catch(() => { /* tab may not have content script */ });
+}
+
+async function saveRecentThreat(result, url) {
+  try {
+    let domain = url;
+    try { domain = new URL(url).hostname; } catch {}
+    const threat = {
+      verdict: result.verdict,
+      domain,
+      score: result.risk_score,
+      brand: result.brand_impersonated || null,
+      time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+    };
+    const d = await chrome.storage.local.get('recentThreats');
+    const list = (d.recentThreats || []);
+    list.unshift(threat);
+    await chrome.storage.local.set({ recentThreats: list.slice(0, 20) });
+  } catch (e) { log('saveRecentThreat error:', e); }
 }
 
 // ── Periodic health check ────────────────────────────────────────────────────
