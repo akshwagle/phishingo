@@ -20,16 +20,36 @@ async function loadCurrentTabStatus() {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (!tab) return;
 
-  const domain = tab.url ? (() => { try { return new URL(tab.url).hostname; } catch { return tab.url; } })() : '—';
+  const url    = tab.url || '';
+  const domain = url ? (() => { try { return new URL(url).hostname; } catch { return url; } })() : '—';
   document.getElementById('page-domain').textContent = domain;
 
-  // Ask background for the result it already computed for this tab
-  chrome.runtime.sendMessage({ action: 'getTabResult' }, (result) => {
-    if (chrome.runtime.lastError || !result) {
-      setPageVerdict('UNKNOWN', null);
+  // Skip non-web URLs
+  if (!url || url.startsWith('chrome://') || url.startsWith('chrome-extension://') || url.startsWith('about:')) {
+    setPageVerdict('SAFE', 0);
+    document.getElementById('page-summary').textContent = 'Browser page — not scanned.';
+    return;
+  }
+
+  // Try cached result first
+  chrome.runtime.sendMessage({ action: 'getTabResult' }, (cached) => {
+    if (!chrome.runtime.lastError && cached) {
+      setPageVerdict(cached.verdict, cached.risk_score, cached.brand_impersonated);
       return;
     }
-    setPageVerdict(result.verdict, result.risk_score, result.brand_impersonated);
+
+    // No cache — kick off a live scan and show progress
+    document.getElementById('page-summary').textContent = 'Scanning...';
+    document.getElementById('verdict-badge').textContent = '...';
+    document.getElementById('score-num').textContent = '…';
+
+    chrome.runtime.sendMessage({ action: 'scanTabUrl', url, tabId: tab.id }, (result) => {
+      if (chrome.runtime.lastError || !result) {
+        setPageVerdict('UNKNOWN', null);
+        return;
+      }
+      setPageVerdict(result.verdict, result.risk_score, result.brand_impersonated);
+    });
   });
 }
 

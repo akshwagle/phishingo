@@ -124,6 +124,23 @@ async function handleMessage(msg, sender) {
     case 'getOfflineStatus':
       return { offline };
 
+    // Popup asks: scan this URL and cache it for the given tab
+    case 'scanTabUrl': {
+      const result = await doQuickCheck(msg.url);
+      if (result && !result.offline && msg.tabId) {
+        await chrome.storage.session.set({
+          [`tab_${msg.tabId}`]: { ...result, url: msg.url, checkedAt: Date.now() },
+        });
+        const { autoBlock = true } = await chrome.storage.local.get('autoBlock');
+        if (result.verdict === C.DANGEROUS && autoBlock) {
+          safeSend(msg.tabId, { action: 'showBlockPage', result });
+        } else if (result.verdict === C.SUSPICIOUS) {
+          safeSend(msg.tabId, { action: 'showSuspiciousBanner', result });
+        }
+      }
+      return result;
+    }
+
     default:
       return null;
   }
@@ -191,5 +208,27 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
     log('Health check:', status);
   }
 });
+
+// ── Scan active tab immediately on startup (handles tabs open before install) ─
+(async () => {
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (tab?.url && !tab.url.startsWith('chrome') && !tab.url.startsWith('about')) {
+      const result = await doQuickCheck(tab.url);
+      if (!result || result.offline) return;
+      await chrome.storage.session.set({ [`tab_${tab.id}`]: { ...result, url: tab.url, checkedAt: Date.now() } });
+      const { autoBlock = true } = await chrome.storage.local.get('autoBlock');
+      if (result.verdict === C.DANGEROUS && autoBlock) {
+        safeSend(tab.id, { action: 'showBlockPage', result });
+        chrome.action.setBadgeText({ tabId: tab.id, text: result.risk_score.toString() });
+        chrome.action.setBadgeBackgroundColor({ tabId: tab.id, color: C.COLOR_DANGER });
+      } else if (result.verdict === C.SUSPICIOUS) {
+        safeSend(tab.id, { action: 'showSuspiciousBanner', result });
+        chrome.action.setBadgeText({ tabId: tab.id, text: result.risk_score.toString() });
+        chrome.action.setBadgeBackgroundColor({ tabId: tab.id, color: C.COLOR_WARNING });
+      }
+    }
+  } catch (e) { log('Startup scan error:', e); }
+})();
 
 log('Service worker initialized');

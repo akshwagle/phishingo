@@ -542,15 +542,24 @@
     }, 100);
   });
 
-  // ── Init: get current page result from background ────────────────────────
-  chrome.runtime.sendMessage({ action: 'getTabResult' }, (result) => {
-    if (chrome.runtime.lastError || !result) return;
-    pageResult = result;
-
-    // If domain is suspicious, arm password sentinel proactively
-    if (result.risk_score >= 50) {
-      attachPasswordSentinel(result);
+  // ── Init: get or trigger a scan for this page ────────────────────────────
+  chrome.runtime.sendMessage({ action: 'getTabResult' }, (cached) => {
+    if (!chrome.runtime.lastError && cached) {
+      pageResult = cached;
+      if (pageResult.risk_score >= 50) attachPasswordSentinel(pageResult);
+      return;
     }
+
+    // No cached result yet (e.g. tab was open before extension loaded) — trigger one
+    chrome.runtime.sendMessage(
+      { action: 'scanTabUrl', url: location.href },
+      (result) => {
+        if (chrome.runtime.lastError || !result || result.offline) return;
+        pageResult = result;
+        if (result.risk_score >= 50) attachPasswordSentinel(result);
+        // Show UI if the result warrants it (block page / banner already shown by background)
+      }
+    );
   });
 
   // ── Utility ───────────────────────────────────────────────────────────────
