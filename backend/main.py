@@ -1089,17 +1089,13 @@ async def safe_mails_status(session_id: str) -> dict:
 # ── Telegram webhook ─────────────────────────────────────────────────────────
 
 @app.post("/api/telegram/webhook")
-async def telegram_webhook(request: Request) -> dict:
+async def telegram_webhook(update: dict) -> dict:
     """
     Handles all Telegram bot messages.
     - /start → greeting
     - PFP-XXXX code → link chat_id to pending verification
     """
-    try:
-        data = await request.json()
-    except Exception:
-        return {"ok": True}
-
+    data = update or {}
     message = data.get("message") or data.get("edited_message") or {}
     text    = (message.get("text") or "").strip()
     chat    = message.get("chat", {})
