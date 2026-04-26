@@ -40,7 +40,7 @@ async def _refresh_openphish() -> None:
     """Pull the plain-text OpenPhish feed into the in-memory set."""
     global _openphish_urls, _openphish_last_refresh
     try:
-        async with httpx.AsyncClient(timeout=20) as client:
+        async with httpx.AsyncClient(timeout=20, follow_redirects=True) as client:
             resp = await client.get(_OPENPHISH_FEED_URL)
             if resp.status_code == 200:
                 new_set = {

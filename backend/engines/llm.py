@@ -161,7 +161,17 @@ async def _query_model(
         )
         resp.raise_for_status()
         data = resp.json()
-        raw_text: str = data["choices"][0]["message"]["content"]
+        msg = data["choices"][0]["message"]
+        # Some reasoning models return null content with output in reasoning_content
+        raw_text: str = (
+            msg.get("content")
+            or msg.get("reasoning_content")
+            or msg.get("tool_calls", [{}])[0].get("function", {}).get("arguments", "")
+            or ""
+        )
+        if not raw_text.strip():
+            statuses[model] = "empty_response"
+            return {"error": "model returned empty content"}
         parsed = _extract_json(raw_text)
         statuses[model] = "ok"
         return parsed
