@@ -899,16 +899,21 @@ import threading
 import urllib.parse
 from email.header import decode_header as _decode_header
 
+import random
+import string as _string
+
 _safe_mail_sessions: dict[str, dict] = {}   # session_id → config
-_oauth_pending: dict[str, dict] = {}         # google-state → {tg_token}
-_tg_pending: dict[str, str] = {}             # tg_token → session_id (pre-auth link)
+_oauth_pending: dict[str, dict] = {}         # google-state → {code, chat_id}
+
+# Verification code → chat_id mapping (set by Telegram webhook when user sends code)
+_verify_codes: dict[str, int | None] = {}    # code → chat_id (None = pending)
 
 _TG_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 _TG_API   = f"https://api.telegram.org/bot{_TG_TOKEN}"
 
 GOOGLE_SCOPES = ["https://www.googleapis.com/auth/gmail.readonly"]
 
-_GOOGLE_CLIENT_ID     = os.getenv("GOOGLE_CLIENT_ID", "")
+_GOOGLE_CLIENT_ID     = os.getenv("GOOGLE_CLIENT_ID", "4979896833-m4ij85sn429q8uhe7qf7qtrtpi0skf81.apps.googleusercontent.com")
 _GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET", "")
 _GOOGLE_REDIRECT_URI  = os.getenv(
     "GOOGLE_REDIRECT_URI",
@@ -917,23 +922,57 @@ _GOOGLE_REDIRECT_URI  = os.getenv(
 _FRONTEND_URL = os.getenv("FRONTEND_URL", "https://phishingo-zk3c.vercel.app")
 
 
+def _generate_verify_code() -> str:
+    """Generate a human-readable 6-char verification code like PFP-A3X9."""
+    suffix = ''.join(random.choices(_string.ascii_uppercase + _string.digits, k=4))
+    return f"PFP-{suffix}"
+
+
+class SafeMailGenerateCodeRequest(BaseModel):
+    phone: str  # user's phone number (for their reference only)
+
+
 class SafeMailAuthRequest(BaseModel):
-    tg_token: str  # link token from frontend (ties Telegram chat_id to Gmail session)
+    code: str   # verification code user sent to the bot
 
 
 class SafeMailDisconnectRequest(BaseModel):
     session_id: str
 
 
+@app.post("/api/safe-mails/generate-code")
+async def safe_mails_generate_code(req: SafeMailGenerateCodeRequest) -> dict:
+    """
+    Step 1: User enters their phone number.
+    We generate a short code. They send it to the Telegram bot.
+    Returns: { code: 'PFP-XXXX' }
+    """
+    code = _generate_verify_code()
+    _verify_codes[code] = None  # None = waiting for user to send it to bot
+    return {"code": code, "bot": f"https://t.me/phishfilter_bot", "phone": req.phone}
+
+
+@app.get("/api/safe-mails/code-status/{code}")
+async def safe_mails_code_status(code: str) -> dict:
+    """Frontend polls this every 2s. Returns linked=True once user has messaged the bot."""
+    if code not in _verify_codes:
+        raise HTTPException(status_code=404, detail="Code not found or expired")
+    chat_id = _verify_codes.get(code)
+    return {"linked": chat_id is not None, "chat_id": chat_id}
+
+
 @app.post("/api/safe-mails/auth-url")
 async def safe_mails_auth_url(req: SafeMailAuthRequest) -> dict:
-    """Step 1: generate the Google OAuth URL. Frontend redirects user there."""
+    """Step 2: User has verified Telegram. Now get Google OAuth URL."""
     if not _GOOGLE_CLIENT_ID:
         raise HTTPException(status_code=503, detail="Google OAuth not configured on this server.")
 
+    chat_id = _verify_codes.get(req.code)
+    if chat_id is None:
+        raise HTTPException(status_code=400, detail="Telegram not yet verified. Send the code to the bot first.")
+
     state = str(uuid.uuid4())
-    # Store the tg_token so we can retrieve it in the callback
-    _oauth_pending[state] = {"tg_token": req.tg_token}
+    _oauth_pending[state] = {"code": req.code, "chat_id": chat_id}
 
     params = {
         "client_id":     _GOOGLE_CLIENT_ID,
@@ -945,20 +984,7 @@ async def safe_mails_auth_url(req: SafeMailAuthRequest) -> dict:
         "state":         state,
     }
     auth_url = "https://accounts.google.com/o/oauth2/v2/auth?" + urllib.parse.urlencode(params)
-    return {"auth_url": auth_url, "state": state}
-
-
-@app.get("/api/safe-mails/tg-status/{tg_token}")
-async def safe_mails_tg_status(tg_token: str) -> dict:
-    """Frontend polls this to know when user has started the bot (chat_id is available)."""
-    # Check if any session has this tg_token
-    for sid, sess in _safe_mail_sessions.items():
-        if sess.get("tg_token") == tg_token and sess.get("telegram_chat_id"):
-            return {"linked": True, "session_id": sid, "email": sess.get("email", "")}
-    # Also check pending (bot started but Gmail not yet connected)
-    if tg_token in _tg_pending:
-        return {"linked": True, "session_id": None}  # bot linked, no Gmail yet
-    return {"linked": False}
+    return {"auth_url": auth_url}
 
 
 @app.get("/api/safe-mails/callback")
@@ -1003,16 +1029,14 @@ async def safe_mails_callback(code: str = "", state: str = "", error: str = "") 
     except Exception:
         gmail = "connected"
 
-    tg_token = pending.get("tg_token", "")
+    verify_code = pending.get("code", "")
+    telegram_chat_id = pending.get("chat_id")
 
     session_id = str(uuid.uuid4())
-    # Look up Telegram chat_id if user already started the bot
-    telegram_chat_id = _tg_pending.pop(tg_token, None)
-
     _safe_mail_sessions[session_id] = {
         "email":            gmail,
-        "tg_token":         tg_token,
-        "telegram_chat_id": telegram_chat_id,  # may be None if user hasn't /start-ed yet
+        "verify_code":      verify_code,
+        "telegram_chat_id": telegram_chat_id,
         "access_token":     tokens.get("access_token", ""),
         "refresh_token":    tokens.get("refresh_token", ""),
         "active":           True,
@@ -1023,19 +1047,19 @@ async def safe_mails_callback(code: str = "", state: str = "", error: str = "") 
 
     # Start background polling
     threading.Thread(target=_gmail_poll_loop, args=(session_id,), daemon=True).start()
-    logger.info(f"Safe Mails: Google OAuth connected {gmail} (tg_token={tg_token}, chat_id={telegram_chat_id})")
+    logger.info(f"Safe Mails: Google OAuth connected {gmail} (code={verify_code}, chat_id={telegram_chat_id})")
 
-    # Send Telegram welcome if already linked
+    # Send Telegram welcome
     if telegram_chat_id:
         _send_telegram_message(
             telegram_chat_id,
-            f"✅ *Gmail connected!*\n\nMonitoring *{gmail}*\n\nI'll message you here whenever a suspicious email arrives.",
+            f"✅ *Gmail connected!*\n\nNow monitoring *{gmail}*\n\nI'll message you here whenever a suspicious email arrives. Stay safe! 🛡",
         )
 
     redirect = (
         f"{_FRONTEND_URL}/safe-mails"
         f"?status=connected&session={session_id}&email={urllib.parse.quote(gmail)}"
-        f"&tg_token={urllib.parse.quote(tg_token)}"
+        f"&code={urllib.parse.quote(verify_code)}"
     )
     return RedirectResponse(redirect)
 
@@ -1066,55 +1090,62 @@ async def safe_mails_status(session_id: str) -> dict:
 
 @app.post("/api/telegram/webhook")
 async def telegram_webhook(request: Request) -> dict:
-    """Telegram calls this for every update. Handle /start {tg_token} deep links."""
+    """
+    Handles all Telegram bot messages.
+    - /start → greeting
+    - PFP-XXXX code → link chat_id to pending verification
+    """
     try:
         data = await request.json()
     except Exception:
         return {"ok": True}
 
     message = data.get("message") or data.get("edited_message") or {}
-    text     = message.get("text", "")
-    chat     = message.get("chat", {})
-    chat_id  = chat.get("id")
-    name     = chat.get("first_name", "there")
+    text    = (message.get("text") or "").strip()
+    chat    = message.get("chat", {})
+    chat_id = chat.get("id")
+    name    = chat.get("first_name", "there")
 
     if not chat_id:
         return {"ok": True}
 
-    if text.startswith("/start"):
-        parts     = text.split(" ", 1)
-        tg_token  = parts[1].strip() if len(parts) > 1 else ""
-
-        if tg_token:
-            # Link this chat to the pending session
-            _tg_pending[tg_token] = chat_id
-
-            # If Gmail is already connected (rare race), link immediately
-            for sess in _safe_mail_sessions.values():
-                if sess.get("tg_token") == tg_token and not sess.get("telegram_chat_id"):
-                    sess["telegram_chat_id"] = chat_id
-                    _send_telegram_message(
-                        chat_id,
-                        f"✅ *All connected, {name}!*\n\nMonitoring *{sess['email']}*\n\nI'll alert you here whenever a suspicious email arrives. Stay safe!",
-                    )
-                    return {"ok": True}
-
-            # Gmail not yet connected — tell user to go back and connect
+    # Check if message is a verification code (format: PFP-XXXX)
+    import re as _re
+    code_match = _re.match(r'^(PFP-[A-Z0-9]{4})$', text.upper())
+    if code_match:
+        code = code_match.group(1)
+        if code in _verify_codes:
+            _verify_codes[code] = chat_id  # mark as verified
             _send_telegram_message(
                 chat_id,
-                f"👋 Hi {name}! Your Telegram is linked.\n\n"
-                "Now go back to the *Safe Mails* page and click *Connect Gmail* to finish setup.\n\n"
-                "Once connected I'll watch your inbox and alert you here.",
+                f"✅ *Verified, {name}!*\n\n"
+                "Your Telegram is linked to PhishFilter Pro.\n\n"
+                "Now go back to the Safe Mails page and click *Connect Gmail* to finish setup.\n\n"
+                "I'll alert you here whenever a suspicious email arrives. 🛡",
             )
         else:
-            # Plain /start without token
             _send_telegram_message(
                 chat_id,
-                f"👋 Hi {name}! I'm *PhishFilter Pro*.\n\n"
-                "I scan your Gmail for phishing emails and alert you here instantly.\n\n"
-                f"Get started at:\n{_FRONTEND_URL}/safe-mails",
+                "❌ That code wasn't recognised. It may have expired.\n\n"
+                f"Go to {_FRONTEND_URL}/safe-mails to generate a new one.",
             )
+        return {"ok": True}
 
+    if text.startswith("/start"):
+        _send_telegram_message(
+            chat_id,
+            f"👋 Hi {name}! I'm *PhishFilter Pro Bot*.\n\n"
+            "I scan your Gmail for phishing emails and alert you instantly.\n\n"
+            f"To get started, visit:\n{_FRONTEND_URL}/safe-mails\n\n"
+            "You'll get a 6-character code to send me here.",
+        )
+        return {"ok": True}
+
+    # Any other message
+    _send_telegram_message(
+        chat_id,
+        f"Send me your *PFP-XXXX* verification code from the Safe Mails page, or visit:\n{_FRONTEND_URL}/safe-mails",
+    )
     return {"ok": True}
 
 

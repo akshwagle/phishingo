@@ -2,17 +2,11 @@
 import { useEffect, useState, useRef, Suspense } from 'react'
 import Link from 'next/link'
 import { useSearchParams } from 'next/navigation'
-import { Shield, Mail, Bell, CheckCircle, AlertTriangle, ArrowRight, Zap, Lock, Globe, RefreshCw, Send } from 'lucide-react'
+import { Shield, Mail, Bell, CheckCircle, AlertTriangle, ArrowRight, Zap, Lock, Globe, RefreshCw, Phone } from 'lucide-react'
 
 const BACKEND = process.env.NEXT_PUBLIC_BACKEND_URL || 'https://phishingo-production.up.railway.app'
-const TG_BOT  = 'phishfilter_bot'
 
-// Tiny UUID-ish token generator (no crypto dependency)
-function makeToken() {
-  return Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2)
-}
-
-// ── Google G icon ─────────────────────────────────────────────────────────────
+// ── Icons ─────────────────────────────────────────────────────────────────────
 function GoogleIcon() {
   return (
     <svg width="18" height="18" viewBox="0 0 48 48">
@@ -25,7 +19,6 @@ function GoogleIcon() {
   )
 }
 
-// ── Telegram Plane icon ───────────────────────────────────────────────────────
 function TelegramIcon({ size = 18 }: { size?: number }) {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor">
@@ -38,54 +31,57 @@ function TelegramIcon({ size = 18 }: { size?: number }) {
 function SafeMailsContent() {
   const searchParams = useSearchParams()
 
-  // Connection state machine: idle → tg_pending → tg_linked → gmail_pending → connected
-  const [phase, setPhase] = useState<'idle' | 'tg_pending' | 'tg_linked' | 'gmail_pending' | 'connected'>('idle')
-  const [tgToken, setTgToken]         = useState('')
+  // Phases: idle → phone_entered → code_sent → tg_verified → gmail_pending → connected
+  const [phase, setPhase]               = useState<'idle' | 'phone_entered' | 'code_sent' | 'tg_verified' | 'gmail_pending' | 'connected'>('idle')
+  const [phone, setPhone]               = useState('')
+  const [verifyCode, setVerifyCode]     = useState('')
   const [connectedEmail, setConnectedEmail] = useState('')
-  const [sessionId, setSessionId]     = useState('')
-  const [errorMsg, setErrorMsg]       = useState('')
-  const [faqOpen, setFaqOpen]         = useState<number | null>(null)
-  const [stats, setStats]             = useState({ alerts_sent: 0, emails_scanned: 0 })
+  const [sessionId, setSessionId]       = useState('')
+  const [errorMsg, setErrorMsg]         = useState('')
+  const [faqOpen, setFaqOpen]           = useState<number | null>(null)
+  const [stats, setStats]               = useState({ alerts_sent: 0, emails_scanned: 0 })
+  const [copied, setCopied]             = useState(false)
   const pollRef = useRef<NodeJS.Timeout | null>(null)
 
-  // Read OAuth callback query params
+  // Read OAuth callback query params on mount
   useEffect(() => {
     const s    = searchParams.get('status')
     const sess = searchParams.get('session')
     const em   = searchParams.get('email')
-    const tg   = searchParams.get('tg_token')
+    const code = searchParams.get('code')
     const err  = searchParams.get('error')
 
     if (s === 'connected' && sess) {
       setPhase('connected')
       setSessionId(sess)
       setConnectedEmail(decodeURIComponent(em || ''))
-      if (tg) setTgToken(tg)
+      if (code) setVerifyCode(code)
       window.history.replaceState({}, '', '/safe-mails')
     } else if (err) {
       setErrorMsg(err === 'cancelled' ? 'Google sign-in was cancelled.' : `Auth failed: ${err}`)
+      setPhase('tg_verified')
     }
 
-    // Restore tg_token from localStorage if coming back from Gmail OAuth
-    const saved = localStorage.getItem('pfp_tg_token')
-    if (saved && !tg) setTgToken(saved)
+    // Restore saved code if returning from OAuth redirect
+    const saved = localStorage.getItem('pfp_verify_code')
+    if (saved && !code) setVerifyCode(saved)
   }, [searchParams])
 
-  // Poll for Telegram link (waiting for user to /start the bot)
+  // Poll for Telegram verification (user sent code to bot)
   useEffect(() => {
-    if (phase !== 'tg_pending' || !tgToken) return
+    if (phase !== 'code_sent' || !verifyCode) return
     pollRef.current = setInterval(async () => {
       try {
-        const res  = await fetch(`${BACKEND}/api/safe-mails/tg-status/${tgToken}`)
+        const res  = await fetch(`${BACKEND}/api/safe-mails/code-status/${verifyCode}`)
         const data = await res.json()
         if (data.linked) {
           clearInterval(pollRef.current!)
-          setPhase('tg_linked')
+          setPhase('tg_verified')
         }
       } catch { /* ignore */ }
-    }, 2500)
+    }, 2000)
     return () => clearInterval(pollRef.current!)
-  }, [phase, tgToken])
+  }, [phase, verifyCode])
 
   // Poll live stats when connected
   useEffect(() => {
@@ -102,31 +98,48 @@ function SafeMailsContent() {
     return () => clearInterval(interval)
   }, [phase, sessionId])
 
-  // ── Step 1: open Telegram bot ────────────────────────────────────────────────
-  function handleConnectTelegram() {
-    const token = makeToken()
-    setTgToken(token)
-    localStorage.setItem('pfp_tg_token', token)
-    setPhase('tg_pending')
-    // Deep-link opens the bot with the token as start payload
-    window.open(`https://t.me/${TG_BOT}?start=${token}`, '_blank')
+  // Step 1: generate verification code
+  async function handleGenerateCode() {
+    if (!phone.trim()) return
+    setErrorMsg('')
+    try {
+      const res  = await fetch(`${BACKEND}/api/safe-mails/generate-code`, {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ phone: phone.trim() }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.detail || 'Failed')
+      setVerifyCode(data.code)
+      localStorage.setItem('pfp_verify_code', data.code)
+      setPhase('code_sent')
+    } catch (err: unknown) {
+      setErrorMsg(err instanceof Error ? err.message : 'Could not generate code')
+    }
   }
 
-  // ── Step 2: connect Gmail ────────────────────────────────────────────────────
+  function handleCopyCode() {
+    navigator.clipboard.writeText(verifyCode).catch(() => {})
+    setCopied(true)
+    setTimeout(() => setCopied(false), 2000)
+  }
+
+  // Step 2: connect Gmail via Google OAuth
   async function handleConnectGmail() {
     setErrorMsg('')
     setPhase('gmail_pending')
+    localStorage.setItem('pfp_verify_code', verifyCode)
     try {
       const res  = await fetch(`${BACKEND}/api/safe-mails/auth-url`, {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ tg_token: tgToken }),
+        body:    JSON.stringify({ code: verifyCode }),
       })
       const data = await res.json()
       if (!res.ok) throw new Error(data.detail || 'Failed')
       window.location.href = data.auth_url
     } catch (err: unknown) {
-      setPhase('tg_linked')
+      setPhase('tg_verified')
       setErrorMsg(err instanceof Error ? err.message : 'Backend error')
     }
   }
@@ -142,17 +155,18 @@ function SafeMailsContent() {
     setPhase('idle')
     setSessionId('')
     setConnectedEmail('')
-    setTgToken('')
+    setVerifyCode('')
+    setPhone('')
     setStats({ alerts_sent: 0, emails_scanned: 0 })
-    localStorage.removeItem('pfp_tg_token')
+    localStorage.removeItem('pfp_verify_code')
   }
 
   const faqs = [
-    { q: 'Why does it ask me to open Telegram first?', a: 'We need your Telegram chat ID before we can send you alerts. The easiest way is a deep link — click our button, the bot gets your chat ID automatically, no manual entry needed.' },
-    { q: 'What Gmail permissions do you request?', a: 'Read-only (gmail.readonly). We cannot send, delete, or modify any email. You can revoke access anytime in myaccount.google.com → Security → Third-party apps.' },
+    { q: 'Do I need a Telegram account?', a: 'Yes — Telegram is free and available on all platforms. Create one in 30 seconds at telegram.org. Then send your code to @phishfilter_bot.' },
+    { q: 'What Gmail permissions do you request?', a: 'Read-only (gmail.readonly). We cannot send, delete, or modify any email. Revoke access anytime in myaccount.google.com → Security → Third-party apps.' },
     { q: 'How fast are Telegram alerts?', a: 'We check your inbox every 2 minutes. When a new email arrives, analysis takes 5-15 seconds, then Telegram delivers instantly.' },
-    { q: 'Which emails trigger an alert?', a: 'Only emails scoring 30+ on our risk scale. Safe, legitimate emails are silently marked clean — zero notification noise.' },
-    { q: 'Is the Telegram bot secure?', a: 'Yes. The bot only sends messages to your chat — it cannot read your Telegram messages. Your Gmail credentials never touch Telegram.' },
+    { q: 'Which emails trigger an alert?', a: 'Only emails scoring 30+ on our risk scale. Legitimate emails are silently cleared — zero notification noise.' },
+    { q: 'Is the Telegram bot secure?', a: 'Yes. The bot only sends messages to you — it cannot read your Telegram messages. Your Gmail credentials never touch Telegram.' },
     { q: 'How do I stop monitoring?', a: 'Click Disconnect on this page. All stored tokens are immediately deleted, Gmail access revoked, and the bot stops sending alerts.' },
   ]
 
@@ -195,18 +209,17 @@ function SafeMailsContent() {
             <span className="text-[#16a34a]">before you even open it.</span>
           </h1>
           <p className="text-[16px] text-[#5a5a5a] leading-relaxed max-w-[580px] mx-auto">
-            Connect Gmail + Telegram in 30 seconds. Every new email runs through our 10-engine detector.
-            If something looks like phishing, your Telegram gets a plain-English alert instantly.
+            Enter your number, connect Gmail, and get Telegram alerts whenever a suspicious email lands in your inbox.
           </p>
         </section>
 
-        {/* Steps */}
+        {/* Steps overview */}
         <section className="mx-auto max-w-[800px] mb-12">
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
             {[
-              { icon: TelegramIcon, color: '#0088cc', bg: '#e8f4fd', num: '1', title: 'Open the bot', desc: 'Click "Connect Telegram" — it opens @phishfilter_bot and links your chat ID automatically.' },
-              { icon: Mail,         color: '#4f46e5', bg: '#eff4ff', num: '2', title: 'Connect Gmail', desc: 'Sign in with Google. Read-only access. We never see your password or write any emails.' },
-              { icon: Bell,         color: '#16a34a', bg: '#f0fff6', num: '3', title: 'Get alerts', desc: 'Suspicious email arrives → Telegram message with verdict, score, and a short plain-English summary.' },
+              { icon: Phone,  color: '#4f46e5', bg: '#eff4ff', num: '1', title: 'Enter your number', desc: 'We generate a short code. Send it to @phishfilter_bot on Telegram — takes 10 seconds.' },
+              { icon: Mail,   color: '#0088cc', bg: '#e8f4fd', num: '2', title: 'Connect Gmail',     desc: 'Sign in with Google. Read-only access. We never see your password or write emails.' },
+              { icon: Bell,   color: '#16a34a', bg: '#f0fff6', num: '3', title: 'Get alerts',        desc: 'Suspicious email arrives → Telegram message with verdict, score, and plain-English summary.' },
             ].map(({ icon: Icon, color, bg, num, title, desc }) => (
               <div key={num} className="clay p-5">
                 <div className="flex items-center gap-3 mb-3">
@@ -264,10 +277,10 @@ function SafeMailsContent() {
                 </div>
 
                 <p className="text-[12px] text-[#5a5a5a] mb-4">
-                  Alerts going to{' '}
-                  <a href={`https://t.me/${TG_BOT}`} target="_blank" rel="noreferrer"
+                  Alerts going to your Telegram via{' '}
+                  <a href="https://t.me/phishfilter_bot" target="_blank" rel="noreferrer"
                     className="text-[#0088cc] no-underline font-bold">
-                    @{TG_BOT}
+                    @phishfilter_bot
                   </a>
                 </p>
 
@@ -279,11 +292,13 @@ function SafeMailsContent() {
               </div>
             )}
 
-            {/* ── IDLE ── */}
+            {/* ── IDLE: enter phone number ── */}
             {phase === 'idle' && (
               <>
-                <h3 className="text-[18px] font-bold mb-1">Get started — 2 steps</h3>
-                <p className="text-[13px] text-[#5a5a5a] mb-6">Connect Telegram first, then Gmail. Takes 30 seconds.</p>
+                <h3 className="text-[18px] font-bold mb-1">Get started in 2 steps</h3>
+                <p className="text-[13px] text-[#5a5a5a] mb-6">
+                  Enter your phone number, then send a short code to our Telegram bot to link your account.
+                </p>
 
                 {errorMsg && (
                   <div className="mb-4 rounded-xl border-2 border-[#ffb3b3] bg-[#fff1f1] px-4 py-3 text-[13px] text-[#dc2626] font-bold flex items-center gap-2">
@@ -291,62 +306,87 @@ function SafeMailsContent() {
                   </div>
                 )}
 
-                <button onClick={handleConnectTelegram}
-                  className="w-full flex items-center justify-center gap-3 py-3.5 rounded-xl font-bold text-[15px] mb-3 transition-all"
-                  style={{ background: '#0088cc', color: '#fff', border: '2px solid #006ba1',
-                    boxShadow: '3px 3px 0 #004d70', cursor: 'pointer', fontFamily: "'Space Mono', monospace" }}>
-                  <TelegramIcon size={20} />
-                  Step 1 — Connect Telegram
-                </button>
-                <p className="text-center text-[11px] text-[#5a5a5a] mb-5">
-                  Opens @{TG_BOT} in Telegram. Just press Start.
-                </p>
+                <label className="block text-[12px] font-bold mb-1.5 text-[#5a5a5a]">
+                  YOUR PHONE NUMBER (with country code)
+                </label>
+                <input
+                  type="tel"
+                  value={phone}
+                  onChange={e => setPhone(e.target.value)}
+                  placeholder="+91 98765 43210"
+                  className="w-full rounded-xl border-2 border-[#1a1a1a] px-4 py-3 text-[14px] mb-4 outline-none focus:border-[#4f46e5]"
+                  style={{ fontFamily: "'Space Mono', monospace", background: '#fffefb' }}
+                  onKeyDown={e => e.key === 'Enter' && handleGenerateCode()}
+                />
 
-                <button disabled
-                  className="w-full flex items-center justify-center gap-3 py-3.5 rounded-xl font-bold text-[14px] opacity-40 cursor-not-allowed"
-                  style={{ background: '#f3f4f6', color: '#374151', border: '2px solid #d1d5db',
-                    fontFamily: "'Space Mono', monospace" }}>
-                  <GoogleIcon />
-                  Step 2 — Connect Gmail
+                <button
+                  onClick={handleGenerateCode}
+                  disabled={!phone.trim()}
+                  className="w-full flex items-center justify-center gap-3 py-3.5 rounded-xl font-bold text-[15px] transition-all"
+                  style={{
+                    background: phone.trim() ? '#4f46e5' : '#e5e7eb',
+                    color: phone.trim() ? '#fff' : '#9ca3af',
+                    border: `2px solid ${phone.trim() ? '#3730a3' : '#d1d5db'}`,
+                    boxShadow: phone.trim() ? '3px 3px 0 #3730a3' : 'none',
+                    cursor: phone.trim() ? 'pointer' : 'not-allowed',
+                    fontFamily: "'Space Mono', monospace",
+                  }}>
+                  <TelegramIcon size={18} />
+                  Get Telegram verification code
                 </button>
-                <p className="text-center text-[11px] text-[#9ca3af] mt-2">Available after Telegram is linked</p>
               </>
             )}
 
-            {/* ── TG_PENDING: waiting for user to press /start ── */}
-            {phase === 'tg_pending' && (
-              <div className="text-center py-4">
-                <div className="h-14 w-14 rounded-full flex items-center justify-center mx-auto mb-4"
-                  style={{ background: '#e8f4fd', border: '2px solid #0088cc' }}>
-                  <TelegramIcon size={28} />
-                </div>
-                <h3 className="text-[16px] font-bold mb-2">Waiting for Telegram...</h3>
-                <p className="text-[13px] text-[#5a5a5a] mb-4">
-                  Open the Telegram tab that just opened and press <strong>Start</strong>.
+            {/* ── CODE_SENT: show code, wait for bot message ── */}
+            {phase === 'code_sent' && (
+              <div>
+                <h3 className="text-[17px] font-bold mb-1">Send this code to @phishfilter_bot</h3>
+                <p className="text-[13px] text-[#5a5a5a] mb-5">
+                  Open Telegram, search for <strong>@phishfilter_bot</strong>, and send this code as a message.
+                  This page will automatically advance.
                 </p>
-                <div className="flex justify-center gap-1.5 mb-5">
-                  {[0,1,2].map(i => (
-                    <span key={i} className="h-2.5 w-2.5 rounded-full bg-[#0088cc]"
-                      style={{ animation: `pulse 1.2s ${i * 0.2}s infinite` }} />
-                  ))}
+
+                {/* Big code display */}
+                <div className="rounded-xl border-2 border-[#4f46e5] bg-[#eff4ff] px-6 py-5 mb-5 text-center"
+                  style={{ boxShadow: '3px 3px 0 #4f46e5' }}>
+                  <div className="text-[11px] font-bold text-[#5a5a5a] mb-2 tracking-[0.12em]">YOUR VERIFICATION CODE</div>
+                  <div className="text-[36px] font-bold text-[#4f46e5] tracking-[0.15em] mb-3">{verifyCode}</div>
+                  <button
+                    onClick={handleCopyCode}
+                    className="text-[12px] font-bold px-4 py-1.5 rounded-lg transition-all"
+                    style={{ background: copied ? '#dcfce7' : '#e0e7ff', color: copied ? '#16a34a' : '#4f46e5', border: '1.5px solid currentColor', cursor: 'pointer', fontFamily: "'Space Mono', monospace" }}>
+                    {copied ? 'Copied!' : 'Copy code'}
+                  </button>
                 </div>
-                <a href={`https://t.me/${TG_BOT}?start=${tgToken}`} target="_blank" rel="noreferrer"
-                  className="clay-btn px-4 py-2 text-[13px] inline-flex items-center gap-2 no-underline"
-                  style={{ background: '#0088cc', color: '#fff', borderColor: '#006ba1' }}>
-                  <TelegramIcon size={14} /> Open bot again
+
+                <a
+                  href="https://t.me/phishfilter_bot"
+                  target="_blank"
+                  rel="noreferrer"
+                  className="w-full flex items-center justify-center gap-3 py-3 rounded-xl font-bold text-[14px] no-underline mb-4"
+                  style={{ background: '#0088cc', color: '#fff', border: '2px solid #006ba1', boxShadow: '3px 3px 0 #004d70' }}>
+                  <TelegramIcon size={18} />
+                  Open @phishfilter_bot in Telegram
                 </a>
-                <p className="mt-4 text-[11px] text-[#9ca3af]">
-                  This page will automatically advance once you press Start.
-                </p>
+
+                <div className="flex items-center justify-center gap-2 text-[12px] text-[#5a5a5a]">
+                  <div className="flex gap-1">
+                    {[0,1,2].map(i => (
+                      <span key={i} className="h-2 w-2 rounded-full bg-[#0088cc] inline-block"
+                        style={{ animation: `pulse 1.2s ${i * 0.2}s infinite` }} />
+                    ))}
+                  </div>
+                  Waiting for you to send the code...
+                </div>
               </div>
             )}
 
-            {/* ── TG_LINKED: Telegram done, now connect Gmail ── */}
-            {(phase === 'tg_linked' || phase === 'gmail_pending') && (
+            {/* ── TG_VERIFIED: ready to connect Gmail ── */}
+            {(phase === 'tg_verified' || phase === 'gmail_pending') && (
               <div>
                 <div className="flex items-center gap-2 rounded-xl border-2 border-[#b3e5fc] bg-[#e8f4fd] px-4 py-3 text-[13px] text-[#0277bd] font-bold mb-5">
                   <TelegramIcon size={15} />
-                  Telegram connected! Now connect Gmail.
+                  Telegram verified! Now connect Gmail to start monitoring.
                 </div>
 
                 {errorMsg && (
@@ -360,11 +400,19 @@ function SafeMailsContent() {
                   Sign in with Google. Read-only access — we cannot write or delete emails.
                 </p>
 
-                <button onClick={handleConnectGmail} disabled={phase === 'gmail_pending'}
+                <button
+                  onClick={handleConnectGmail}
+                  disabled={phase === 'gmail_pending'}
                   className="w-full flex items-center justify-center gap-3 py-3.5 rounded-xl font-bold text-[14px] transition-all"
-                  style={{ background: '#fff', border: '2px solid #dadce0',
-                    boxShadow: '0 2px 4px rgba(0,0,0,0.15)', cursor: phase === 'gmail_pending' ? 'wait' : 'pointer',
-                    color: '#3c4043', fontFamily: "'Space Mono', monospace", opacity: phase === 'gmail_pending' ? 0.75 : 1 }}>
+                  style={{
+                    background: '#fff',
+                    border: '2px solid #dadce0',
+                    boxShadow: '0 2px 4px rgba(0,0,0,0.15)',
+                    cursor: phase === 'gmail_pending' ? 'wait' : 'pointer',
+                    color: '#3c4043',
+                    fontFamily: "'Space Mono', monospace",
+                    opacity: phase === 'gmail_pending' ? 0.75 : 1,
+                  }}>
                   {phase === 'gmail_pending' ? (
                     <><span className="w-5 h-5 border-2 border-[#dadce0] border-t-[#4285F4] rounded-full animate-spin" /> Redirecting to Google...</>
                   ) : (
@@ -400,12 +448,12 @@ function SafeMailsContent() {
                   📧 From: <code style={{fontSize:11}}>security@paypaI-secure.ru</code><br />
                   📌 Subject: <em>Urgent account verification</em><br /><br />
                   🔴 Risk score: <strong>82/100</strong><br /><br />
-                  <em>This email pretends to be from PayPal. The sender domain uses a fake lookalike letter. Do not click any links.</em><br /><br />
+                  <em>Pretends to be PayPal. Fake lookalike domain. Do not click any links.</em><br /><br />
                   Red flags:<br />
                   • Fake domain (paypaI ≠ paypal)<br />
-                  • Asks for account credentials<br />
+                  • Asks for credentials<br />
                   • Urgency tactic<br /><br />
-                  ❌ Do NOT click any links in this email.
+                  ❌ Do NOT click any links.
                 </div>
               </div>
             </div>
@@ -461,11 +509,12 @@ function SafeMailsContent() {
           <p className="text-[14px] mb-6" style={{ color: 'rgba(255,255,255,0.85)' }}>
             Free forever. No credit card. No browser extension needed. Works with any Gmail.
           </p>
-          <button onClick={() => { window.scrollTo({ top: 500, behavior: 'smooth' }); if (phase === 'idle') handleConnectTelegram(); }}
+          <button
+            onClick={() => { window.scrollTo({ top: 500, behavior: 'smooth' }) }}
             className="clay-btn px-6 py-3 text-[14px] font-bold inline-flex items-center gap-2"
             style={{ background: '#fff', color: '#16a34a', borderColor: '#fff' }}>
             <TelegramIcon size={16} />
-            Connect Telegram &amp; Gmail
+            Get started — it&apos;s free
             <ArrowRight className="h-4 w-4" />
           </button>
         </section>
