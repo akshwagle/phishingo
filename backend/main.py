@@ -987,6 +987,19 @@ async def safe_mails_auth_url(req: SafeMailAuthRequest) -> dict:
     return {"auth_url": auth_url}
 
 
+@app.get("/api/safe-mails/oauth-debug")
+async def safe_mails_oauth_debug() -> dict:
+    """Debug endpoint — confirms which OAuth credentials are deployed."""
+    return {
+        "client_id_set":      bool(_GOOGLE_CLIENT_ID),
+        "client_id_preview":  _GOOGLE_CLIENT_ID[:30] + "..." if _GOOGLE_CLIENT_ID else "",
+        "client_secret_set":  bool(_GOOGLE_CLIENT_SECRET),
+        "client_secret_len":  len(_GOOGLE_CLIENT_SECRET),
+        "redirect_uri":       _GOOGLE_REDIRECT_URI,
+        "frontend_url":       _FRONTEND_URL,
+    }
+
+
 @app.get("/api/safe-mails/callback")
 async def safe_mails_callback(code: str = "", state: str = "", error: str = "") -> Any:
     """Step 2: Google redirects here after user consents. Exchange code for tokens."""
@@ -997,6 +1010,10 @@ async def safe_mails_callback(code: str = "", state: str = "", error: str = "") 
         return RedirectResponse(f"{_FRONTEND_URL}/safe-mails?error={error or 'cancelled'}")
     if not pending:
         return RedirectResponse(f"{_FRONTEND_URL}/safe-mails?error=invalid_state")
+
+    if not _GOOGLE_CLIENT_SECRET:
+        logger.error("Safe Mails: GOOGLE_CLIENT_SECRET is not set in environment!")
+        return RedirectResponse(f"{_FRONTEND_URL}/safe-mails?error=missing_client_secret")
 
     # Exchange code for access + refresh tokens
     import httpx as _httpx
@@ -1013,10 +1030,15 @@ async def safe_mails_callback(code: str = "", state: str = "", error: str = "") 
         )
         tokens = token_resp.json()
         if "error" in tokens:
-            raise ValueError(tokens["error"])
+            err_desc = tokens.get("error_description", "")
+            err_code = tokens.get("error", "unknown")
+            logger.error(f"Safe Mails: Google rejected token exchange: {err_code} — {err_desc}")
+            return RedirectResponse(
+                f"{_FRONTEND_URL}/safe-mails?error={urllib.parse.quote(err_code + ': ' + err_desc[:80])}"
+            )
     except Exception as e:
-        logger.error(f"Safe Mails: token exchange failed: {e}")
-        return RedirectResponse(f"{_FRONTEND_URL}/safe-mails?error=token_exchange_failed")
+        logger.error(f"Safe Mails: token exchange failed: {type(e).__name__}: {e}")
+        return RedirectResponse(f"{_FRONTEND_URL}/safe-mails?error={urllib.parse.quote('token_exchange: ' + str(e)[:80])}")
 
     # Get user's email via userinfo
     try:
