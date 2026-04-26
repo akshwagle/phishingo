@@ -36,8 +36,7 @@
       "matches": ["<all_urls>"],
       "js": ["content/universal.js"],
       "css": ["content/styles.css"],
-      "run_at": "document_idle",
-      "exclude_matches": ["chrome://*/*", "chrome-extension://*/*"]
+      "run_at": "document_idle"
     },
     {
       "matches": ["https://mail.google.com/*"],
