@@ -12,27 +12,27 @@ const FONT = "'Space Mono', 'Courier New', monospace"
 function Navbar() {
   return (
     <header
-      className="h-14 bg-[#fffefb] border-b-2 border-[#1a1a1a]"
+      className="h-16 bg-[#fffefb] border-b-2 border-[#1a1a1a]"
       style={{ boxShadow: '0 2px 0 #1a1a1a', fontFamily: FONT }}
     >
-      <div className="mx-auto max-w-5xl h-full px-4 flex items-center justify-between">
-        <Link href="/" className="flex items-center gap-2.5 no-underline">
+      <div className="mx-auto max-w-6xl h-full px-6 flex items-center justify-between">
+        <Link href="/" className="flex items-center gap-3 no-underline">
           <div
-            className="h-8 w-8 rounded-xl border-2 border-[#1a1a1a] bg-[#4f46e5] flex items-center justify-center"
+            className="h-9 w-9 rounded-xl border-2 border-[#1a1a1a] bg-[#4f46e5] flex items-center justify-center"
             style={{ boxShadow: '2px 2px 0 #1a1a1a' }}
           >
-            <Shield className="h-4 w-4 text-white" />
+            <Shield className="h-5 w-5 text-white" />
           </div>
-          <span className="text-[16px] font-bold text-[#1a1a1a]">
+          <span className="text-[18px] font-bold text-[#1a1a1a]">
             PhishFilter <span className="text-[#4f46e5]">Pro</span>
           </span>
         </Link>
 
-        <nav className="hidden sm:flex items-center gap-5 text-[12px] font-bold">
-          <Link href="/" className="text-[#5a5a5a] hover:text-[#4f46e5] no-underline transition-colors">Scanner</Link>
-          <Link href="/features" className="text-[#5a5a5a] hover:text-[#4f46e5] no-underline transition-colors">Features</Link>
+        <nav className="hidden sm:flex items-center gap-6 text-[14px] font-bold">
+          <Link href="/" className="text-[#3a3a3a] hover:text-[#4f46e5] no-underline transition-colors">Scanner</Link>
+          <Link href="/features" className="text-[#3a3a3a] hover:text-[#4f46e5] no-underline transition-colors">Features</Link>
           <Link href="/extension" className="text-[#4f46e5] no-underline border-b-2 border-[#4f46e5] pb-0.5">Extension</Link>
-          <Link href="/safe-mails" className="text-[#5a5a5a] hover:text-[#4f46e5] no-underline transition-colors">Safe Mails</Link>
+          <Link href="/safe-mails" className="text-[#3a3a3a] hover:text-[#4f46e5] no-underline transition-colors">Safe Mails</Link>
         </nav>
 
         <div className="flex items-center gap-2 text-[11px] text-[#5a5a5a]">

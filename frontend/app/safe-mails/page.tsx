@@ -43,7 +43,7 @@ function SafeMailsContent() {
   const [copied, setCopied]             = useState(false)
   const pollRef = useRef<NodeJS.Timeout | null>(null)
 
-  // Read OAuth callback query params on mount
+  // Mount: restore saved session OR read OAuth callback params
   useEffect(() => {
     const s    = searchParams.get('status')
     const sess = searchParams.get('session')
@@ -51,20 +51,74 @@ function SafeMailsContent() {
     const code = searchParams.get('code')
     const err  = searchParams.get('error')
 
+    // Came back from a successful OAuth redirect
     if (s === 'connected' && sess) {
+      const email = decodeURIComponent(em || '')
       setPhase('connected')
       setSessionId(sess)
-      setConnectedEmail(decodeURIComponent(em || ''))
+      setConnectedEmail(email)
       if (code) setVerifyCode(code)
+      // Persist for refresh
+      localStorage.setItem('pfp_session', JSON.stringify({ sessionId: sess, email, verifyCode: code || '' }))
+      localStorage.removeItem('pfp_verify_code')
       window.history.replaceState({}, '', '/safe-mails')
-    } else if (err) {
-      setErrorMsg(err === 'cancelled' ? 'Google sign-in was cancelled.' : `Auth failed: ${err}`)
-      setPhase('tg_verified')
+      return
     }
 
-    // Restore saved code if returning from OAuth redirect
-    const saved = localStorage.getItem('pfp_verify_code')
-    if (saved && !code) setVerifyCode(saved)
+    if (err) {
+      setErrorMsg(err === 'cancelled' ? 'Google sign-in was cancelled.' : `Auth failed: ${decodeURIComponent(err)}`)
+      const savedCode = localStorage.getItem('pfp_verify_code')
+      if (savedCode) {
+        setVerifyCode(savedCode)
+        setPhase('tg_verified')
+      }
+      window.history.replaceState({}, '', '/safe-mails')
+      return
+    }
+
+    // Try to restore previously connected session
+    const stored = localStorage.getItem('pfp_session')
+    if (stored) {
+      try {
+        const parsed = JSON.parse(stored)
+        if (parsed?.sessionId) {
+          // Verify session is still alive on backend
+          fetch(`${BACKEND}/api/safe-mails/status/${parsed.sessionId}`)
+            .then(r => r.ok ? r.json() : Promise.reject('expired'))
+            .then(d => {
+              setSessionId(parsed.sessionId)
+              setConnectedEmail(parsed.email || d.email)
+              setVerifyCode(parsed.verifyCode || '')
+              setPhase('connected')
+              setStats({ alerts_sent: d.alerts_sent || 0, emails_scanned: d.emails_scanned || 0 })
+            })
+            .catch(() => {
+              localStorage.removeItem('pfp_session')
+            })
+          return
+        }
+      } catch { /* ignore */ }
+    }
+
+    // Restore mid-flow verify code if returning to page
+    const savedCode = localStorage.getItem('pfp_verify_code')
+    if (savedCode) {
+      fetch(`${BACKEND}/api/safe-mails/code-status/${savedCode}`)
+        .then(r => r.ok ? r.json() : null)
+        .then(data => {
+          if (data?.linked) {
+            setVerifyCode(savedCode)
+            setPhase('tg_verified')
+          } else if (data) {
+            setVerifyCode(savedCode)
+            setPhase('code_sent')
+          } else {
+            // Code expired (backend restart) — start fresh
+            localStorage.removeItem('pfp_verify_code')
+          }
+        })
+        .catch(() => localStorage.removeItem('pfp_verify_code'))
+    }
   }, [searchParams])
 
   // Poll for Telegram verification (user sent code to bot)
@@ -174,22 +228,22 @@ function SafeMailsContent() {
     <div className="min-h-screen bg-[#f5f0e8] text-[#1a1a1a]" style={{ fontFamily: "'Space Mono', monospace" }}>
 
       {/* Navbar */}
-      <header className="h-14 bg-[#fffefb] border-b-2 border-[#1a1a1a]" style={{ boxShadow: '0 2px 0 #1a1a1a' }}>
+      <header className="h-16 bg-[#fffefb] border-b-2 border-[#1a1a1a]" style={{ boxShadow: '0 2px 0 #1a1a1a' }}>
         <div className="mx-auto max-w-6xl h-full px-6 flex items-center justify-between">
-          <Link href="/" className="flex items-center gap-2.5 no-underline">
-            <div className="h-8 w-8 rounded-xl border-2 border-[#1a1a1a] bg-[#4f46e5] flex items-center justify-center"
+          <Link href="/" className="flex items-center gap-3 no-underline">
+            <div className="h-9 w-9 rounded-xl border-2 border-[#1a1a1a] bg-[#4f46e5] flex items-center justify-center"
               style={{ boxShadow: '2px 2px 0 #1a1a1a' }}>
-              <Shield className="h-4 w-4 text-white" />
+              <Shield className="h-5 w-5 text-white" />
             </div>
-            <span className="text-[16px] font-bold">PhishFilter <span className="text-[#4f46e5]">Pro</span></span>
+            <span className="text-[18px] font-bold">PhishFilter <span className="text-[#4f46e5]">Pro</span></span>
           </Link>
-          <nav className="hidden sm:flex items-center gap-5 text-[12px] font-bold">
-            <Link href="/" className="text-[#5a5a5a] hover:text-[#4f46e5] no-underline transition-colors">Scanner</Link>
-            <Link href="/features" className="text-[#5a5a5a] hover:text-[#4f46e5] no-underline transition-colors">Features</Link>
-            <Link href="/extension" className="text-[#5a5a5a] hover:text-[#4f46e5] no-underline transition-colors">Extension</Link>
+          <nav className="hidden sm:flex items-center gap-6 text-[14px] font-bold">
+            <Link href="/" className="text-[#3a3a3a] hover:text-[#4f46e5] no-underline transition-colors">Scanner</Link>
+            <Link href="/features" className="text-[#3a3a3a] hover:text-[#4f46e5] no-underline transition-colors">Features</Link>
+            <Link href="/extension" className="text-[#3a3a3a] hover:text-[#4f46e5] no-underline transition-colors">Extension</Link>
             <Link href="/safe-mails" className="text-[#16a34a] border-b-2 border-[#16a34a] pb-0.5 no-underline">Safe Mails</Link>
           </nav>
-          <div className="flex items-center gap-2 text-[12px] text-[#5a5a5a]">
+          <div className="flex items-center gap-2 text-[13px] text-[#3a3a3a] font-bold">
             <span className="h-2 w-2 rounded-full bg-[#16a34a]" />
             <span className="hidden sm:inline">All engines online</span>
           </div>

@@ -334,24 +334,32 @@ dom.whitelistSave.addEventListener('click', () => {
 // ── Scan page button ───────────────────────────────────────────────────────
 dom.btnScanPage.addEventListener('click', async () => {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  if (!tab) return;
+  if (!tab || !tab.id) return;
 
-  // Fire-and-forget: send the scan message then close popup immediately
-  // The side panel will appear in the page without keeping popup open
-  try {
-    await chrome.scripting.executeScript({
-      target: { tabId: tab.id },
-      files: ['content/universal.js'],
+  // Restricted pages where content scripts can't run
+  const restricted = !tab.url || /^(chrome|edge|brave|about|chrome-extension|file):/i.test(tab.url);
+  if (restricted) {
+    chrome.tabs.create({ url: `https://phishingo-zk3c.vercel.app/?url=${encodeURIComponent(tab.url || '')}` });
+    return;
+  }
+
+  // Try sending message — if content script isn't loaded, force-inject and retry
+  const trySend = () => new Promise(resolve => {
+    chrome.tabs.sendMessage(tab.id, { action: 'startPageScan' }, () => {
+      resolve(!chrome.runtime.lastError);
     });
-  } catch { /* already injected */ }
-
-  chrome.tabs.sendMessage(tab.id, { action: 'startPageScan' }, () => {
-    if (chrome.runtime.lastError) {
-      // Content script not running — open full analysis on website
-      chrome.tabs.create({ url: `https://phishingo-zk3c.vercel.app/?url=${encodeURIComponent(tab.url || '')}` });
-    }
   });
-  // Close popup right away so user can see the side panel appear
+
+  let ok = await trySend();
+  if (!ok) {
+    try {
+      await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['content/universal.js'] });
+      await new Promise(r => setTimeout(r, 100));
+      ok = await trySend();
+    } catch { /* injection failed, restricted page */ }
+  }
+
+  // Close popup so the side panel is visible on the page
   window.close();
 });
 

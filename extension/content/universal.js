@@ -445,29 +445,46 @@
   chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     // "Scan this entire page" — from context menu or popup button
     if (msg.action === 'extractPageData' || msg.action === 'startPageScan') {
-      const data = extractPageData();
-      // Show loading panel immediately
+      log('startPageScan received');
+      // ACK immediately so popup knows we're alive
+      sendResponse({ ok: true });
+
+      // Show loading panel right away — regardless of safe/unsafe
       showSidePanel(null);
 
-      chrome.runtime.sendMessage({ action: 'analyzePage', pageData: data }, (result) => {
-        if (!chrome.runtime.lastError && result) {
-          showSidePanel(result);
-        } else {
-          // Fallback: direct API call
-          getBackendUrlDirect().then(base => {
-            return fetch(`${base}/api/page-scan`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify(data),
-              signal: AbortSignal.timeout(20000),
+      const data = extractPageData();
+
+      // Run the scan via background, with direct-fetch fallback
+      const directFetch = () => getBackendUrlDirect().then(base =>
+        fetch(`${base}/api/page-scan`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(data),
+          signal: AbortSignal.timeout(25000),
+        })
+        .then(r => r.json())
+        .then(r => showSidePanel(r))
+      );
+
+      try {
+        chrome.runtime.sendMessage({ action: 'analyzePage', pageData: data }, (result) => {
+          if (chrome.runtime.lastError || !result) {
+            log('background scan failed, trying direct fetch:', chrome.runtime.lastError?.message);
+            directFetch().catch(err => {
+              log('direct fetch also failed:', err);
+              showSidePanel({ verdict: 'UNKNOWN', risk_score: 0, summary: 'Could not reach backend. Please try again.', error: true });
             });
-          }).then(r => r.json()).then(r => showSidePanel(r)).catch(() => {
-            showSidePanel({ verdict: 'UNKNOWN', risk_score: 0, summary: 'Page scan failed.' });
-          });
-        }
-        sendResponse({ ok: true });
-      });
-      return true;
+          } else {
+            showSidePanel(result);
+          }
+        });
+      } catch (err) {
+        log('runtime.sendMessage threw:', err);
+        directFetch().catch(() => {
+          showSidePanel({ verdict: 'UNKNOWN', risk_score: 0, summary: 'Could not reach backend. Please try again.', error: true });
+        });
+      }
+      return false;  // sync ack already sent
     }
 
     if (msg.action === 'showBlockPage') { showBlockPage(msg.result); sendResponse({}); return; }

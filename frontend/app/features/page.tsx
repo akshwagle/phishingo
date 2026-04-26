@@ -20,25 +20,25 @@ export default function FeaturesPage() {
     <div className="min-h-screen bg-[#f5f0e8]" style={{ fontFamily: "'Space Mono', monospace" }}>
 
       {/* Navbar */}
-      <header className="h-14 bg-[#fffefb] border-b-2 border-[#1a1a1a]"
+      <header className="h-16 bg-[#fffefb] border-b-2 border-[#1a1a1a]"
         style={{ boxShadow: '0 2px 0 #1a1a1a' }}>
-        <div className="mx-auto flex h-full max-w-5xl items-center justify-between px-4">
-          <Link href="/" className="flex items-center gap-2.5 no-underline">
-            <div className="h-8 w-8 rounded-xl border-2 border-[#1a1a1a] bg-[#4f46e5] flex items-center justify-center"
+        <div className="mx-auto flex h-full max-w-6xl items-center justify-between px-6">
+          <Link href="/" className="flex items-center gap-3 no-underline">
+            <div className="h-9 w-9 rounded-xl border-2 border-[#1a1a1a] bg-[#4f46e5] flex items-center justify-center"
               style={{ boxShadow: '2px 2px 0 #1a1a1a' }}>
-              <Shield className="h-4 w-4 text-white" />
+              <Shield className="h-5 w-5 text-white" />
             </div>
-            <span className="text-[16px] font-bold text-[#1a1a1a]">
+            <span className="text-[18px] font-bold text-[#1a1a1a]">
               PhishFilter <span className="text-[#4f46e5]">Pro</span>
             </span>
           </Link>
-          <nav className="hidden sm:flex items-center gap-5 text-[12px] font-bold">
-            <Link href="/" className="text-[#5a5a5a] hover:text-[#4f46e5] no-underline transition-colors">Scanner</Link>
+          <nav className="hidden sm:flex items-center gap-6 text-[14px] font-bold">
+            <Link href="/" className="text-[#3a3a3a] hover:text-[#4f46e5] no-underline transition-colors">Scanner</Link>
             <Link href="/features" className="text-[#4f46e5] border-b-2 border-[#4f46e5] pb-0.5 no-underline">Features</Link>
-            <Link href="/extension" className="text-[#5a5a5a] hover:text-[#4f46e5] no-underline transition-colors">Extension</Link>
-            <Link href="/safe-mails" className="text-[#5a5a5a] hover:text-[#4f46e5] no-underline transition-colors">Safe Mails</Link>
+            <Link href="/extension" className="text-[#3a3a3a] hover:text-[#4f46e5] no-underline transition-colors">Extension</Link>
+            <Link href="/safe-mails" className="text-[#3a3a3a] hover:text-[#4f46e5] no-underline transition-colors">Safe Mails</Link>
           </nav>
-          <Link href="/" className="clay-btn bg-[#b3c8ff] text-[#1a1a1a] px-3 py-2 text-[11px] hidden sm:inline-flex">
+          <Link href="/" className="clay-btn bg-[#b3c8ff] text-[#1a1a1a] px-3 py-2 text-[12px] hidden sm:inline-flex">
             Back to scanner
           </Link>
         </div>
