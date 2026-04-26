@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PhishFilter Pro</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+
+<!-- Header -->
+<header class="hdr">
+  <div class="hdr-left">
+    <div class="shield-icon">
+      <svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+      </svg>
+    </div>
+    <span class="brand">PhishFilter <span class="pro">Pro</span></span>
+  </div>
+  <div class="hdr-right">
+    <span class="status-dot" id="status-dot"></span>
+    <span class="status-label" id="status-label">Connecting...</span>
+  </div>
+</header>
+
+<!-- Current page card -->
+<section class="page-card clay">
+  <div class="page-domain" id="page-domain">Loading current page...</div>
+  <div class="verdict-row">
+    <span class="verdict-badge" id="verdict-badge">UNKNOWN</span>
+    <div class="score-circle" id="score-circle">
+      <span id="score-num">?</span>
+    </div>
+  </div>
+  <div class="page-summary" id="page-summary">Checking this site...</div>
+  <div class="page-actions">
+    <button class="btn btn-primary" id="btn-scan-page">Scan this page</button>
+    <button class="btn btn-ghost" id="btn-view-details">View details</button>
+  </div>
+</section>
+
+<!-- Stats grid -->
+<section class="stats-grid">
+  <div class="stat-card clay-sm">
+    <div class="stat-label">Blocked today</div>
+    <div class="stat-val" id="stat-blocked">0</div>
+  </div>
+  <div class="stat-card clay-sm">
+    <div class="stat-label">Links scanned</div>
+    <div class="stat-val" id="stat-links">0</div>
+  </div>
+  <div class="stat-card clay-sm">
+    <div class="stat-label">Passwords saved</div>
+    <div class="stat-val" id="stat-passwords">0</div>
+  </div>
+  <div class="stat-card clay-sm">
+    <div class="stat-label">Phishes caught</div>
+    <div class="stat-val danger" id="stat-phishes">0</div>
+  </div>
+</section>
+
+<!-- Engine status -->
+<section class="engines-section">
+  <div class="engines-label">AI engines</div>
+  <div class="engines-row" id="engines-row">
+    <div class="engine-dot-wrap"><div class="engine-dot" id="eng-qwen"></div><div class="eng-name">Qwen3</div></div>
+    <div class="engine-dot-wrap"><div class="engine-dot" id="eng-kimi"></div><div class="eng-name">Kimi</div></div>
+    <div class="engine-dot-wrap"><div class="engine-dot" id="eng-ds"></div><div class="eng-name">DeepSeek</div></div>
+    <div class="engine-dot-wrap"><div class="engine-dot" id="eng-gem"></div><div class="eng-name">Gemini</div></div>
+    <div class="engine-dot-wrap"><div class="engine-dot" id="eng-gpt"></div><div class="eng-name">GPT-OSS</div></div>
+  </div>
+</section>
+
+<!-- Quick actions -->
+<section class="actions-section">
+  <button class="btn btn-outline full-width" id="btn-clipboard">Scan from clipboard</button>
+  <button class="btn btn-outline full-width" id="btn-dashboard">Open dashboard</button>
+</section>
+
+<!-- Settings (collapsible) -->
+<section class="settings-section">
+  <button class="settings-toggle" id="settings-toggle">
+    Settings
+    <svg id="settings-chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+      <polyline points="6 9 12 15 18 9"/>
+    </svg>
+  </button>
+  <div class="settings-body" id="settings-body" style="display:none">
+    <label class="setting-row">
+      <span>Backend URL</span>
+      <input class="setting-input" id="setting-backend" type="text" placeholder="https://...">
+    </label>
+    <label class="setting-row">
+      <span>Sensitivity</span>
+      <select class="setting-select" id="setting-sensitivity">
+        <option value="low">Low</option>
+        <option value="medium" selected>Medium</option>
+        <option value="high">High</option>
+      </select>
+    </label>
+    <label class="setting-row">
+      <span>Auto-block dangerous</span>
+      <input type="checkbox" id="setting-autoblock" checked>
+    </label>
+    <label class="setting-row">
+      <span>Sound alerts</span>
+      <input type="checkbox" id="setting-sound">
+    </label>
+    <button class="btn btn-subtle small" id="btn-save-settings">Save settings</button>
+    <button class="btn btn-ghost small" id="btn-whitelist">Manage whitelist</button>
+  </div>
+</section>
+
+<!-- Whitelist modal -->
+<div class="modal-overlay" id="whitelist-modal" style="display:none">
+  <div class="modal clay">
+    <div class="modal-hdr">
+      <span class="modal-title">Whitelist</span>
+      <button class="close-btn" id="whitelist-close">✕</button>
+    </div>
+    <p class="modal-sub">One domain per line. These sites will never be scanned.</p>
+    <textarea class="setting-input full-width" id="whitelist-textarea" rows="6" placeholder="example.com&#10;mybank.com"></textarea>
+    <div class="modal-actions">
+      <button class="btn btn-primary small" id="whitelist-save">Save</button>
+      <button class="btn btn-ghost small" id="whitelist-cancel">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<!-- Footer -->
+<footer class="footer">
+  <span>v1.0 · Powered by Hack Club AI</span>
+  <div class="footer-links">
+    <a href="https://phishingo-zk3c.vercel.app" target="_blank">Help</a>
+    <a href="mailto:support@phishfilterpro.com">Report bug</a>
+  </div>
+</footer>
+
+<script type="module" src="popup.js"></script>
+</body>
+</html>

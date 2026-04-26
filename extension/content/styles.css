@@ -1,0 +1,13 @@
+/* Injected into host page — scoped to our host elements only */
+#pfp-block-host,
+#pfp-banner-host,
+#pfp-panel-host,
+#pfp-sentinel-host,
+#pfp-tooltip-host,
+#pfp-result-host {
+  all: initial !important;
+  position: fixed !important;
+  z-index: 2147483647 !important;
+  display: block !important;
+  pointer-events: auto !important;
+}

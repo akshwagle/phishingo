@@ -2,6 +2,9 @@
   "name": "phishingoh",
   "version": "1.0.0",
   "private": true,
+  "scripts": {
+    "package-extension": "cd extension && zip -r ../frontend/public/phishfilter-extension.zip . -x '*.DS_Store' -x '__MACOSX/*' -x 'node_modules/*' -x 'assets/generate-icons.py' && echo 'Extension packaged → frontend/public/phishfilter-extension.zip'"
+  },
   "dependencies": {
     "next": "14.2.35"
   }

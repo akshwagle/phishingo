@@ -143,6 +143,24 @@ class AnalyzeResponse(BaseModel):
     ws_url: str
 
 
+class UrlQuickRequest(BaseModel):
+    url: str
+
+
+class PageScanRequest(BaseModel):
+    url:    str = ""
+    title:  str = ""
+    text:   str = ""
+    links:  list[str] = []
+    forms:  list[dict] = []
+    images: list[dict] = []
+
+
+# ── In-memory URL quick-check cache (30 min TTL) ─────────────────────────────
+_url_quick_cache: dict[str, dict[str, Any]] = {}
+_URL_QUICK_TTL = 1800  # seconds
+
+
 # ── Engine orchestration ──────────────────────────────────────────────────────
 
 _ENGINE_TIMEOUTS: dict[str, float] = {
@@ -712,6 +730,140 @@ async def llm_debug() -> dict[str, Any]:
         )
 
     return dict(results)
+
+
+@app.post("/api/url-quick")
+async def url_quick(req: UrlQuickRequest) -> dict[str, Any]:
+    """
+    Fast URL risk check for the browser extension (< 500ms target).
+    Runs threat_intel + homograph + domain_intel in parallel — no LLM or sandbox.
+    Results are cached in-memory for 30 minutes.
+    """
+    url = req.url.strip()
+    if not url:
+        raise HTTPException(400, detail="url required")
+
+    # Cache hit
+    cached = _url_quick_cache.get(url)
+    if cached and cached["expires_at"] > time.time():
+        return {**cached["result"], "cached": True}
+
+    # Run fast engines concurrently
+    threat_task   = asyncio.create_task(threat_engine.check_threat_feeds([url]))
+    homo_task     = asyncio.create_task(homograph_engine.detect_homographs([url], _BRANDS))
+    domain_task   = asyncio.create_task(_run_domain_intel([url]))
+
+    threat_res, homo_res, domain_res = await asyncio.gather(
+        threat_task, homo_task, domain_task, return_exceptions=True
+    )
+    if isinstance(threat_res,  Exception): threat_res  = {}
+    if isinstance(homo_res,    Exception): homo_res    = {}
+    if isinstance(domain_res,  Exception): domain_res  = {}
+
+    # Score
+    risk = 0
+    sources: list[str] = []
+    brand: str | None = None
+
+    for _url, tr in (threat_res.get("results") or {}).items():
+        if tr.get("matched"):
+            risk += 55
+            sources.extend(tr.get("sources", []))
+
+    homographs = homo_res.get("homographs", [])
+    if homographs:
+        risk += 40
+        brand = homographs[0].get("brand_imitated")
+
+    for _domain, info in (domain_res or {}).items():
+        age = info.get("age_days")
+        if age is not None and age < 30:
+            risk += 20
+        if info.get("suspicious_tld"):
+            risk += 15
+
+    risk = min(100, risk)
+    verdict = "DANGEROUS" if risk >= 65 else "SUSPICIOUS" if risk >= 30 else "SAFE"
+
+    result: dict[str, Any] = {
+        "risk_score":        risk,
+        "verdict":           verdict,
+        "brand_impersonated": brand,
+        "sources_flagged":   list(set(sources)),
+        "cached":            False,
+    }
+    _url_quick_cache[url] = {"result": result, "expires_at": time.time() + _URL_QUICK_TTL}
+    return result
+
+
+@app.post("/api/page-scan")
+async def page_scan(req: PageScanRequest) -> dict[str, Any]:
+    """
+    Full-page phishing analysis for the browser extension.
+    Runs LLM on page text + quick-checks every link in parallel (capped at 50).
+    """
+    # LLM analysis of page text
+    llm_data: dict[str, Any] = {}
+    if req.text.strip():
+        try:
+            llm_data = await asyncio.wait_for(
+                llm_engine.semantic_analysis(req.text[:5000]), timeout=60
+            )
+        except Exception as exc:
+            llm_data = {"error": str(exc)}
+
+    # Quick-check each link (max 50)
+    link_tasks = {
+        link: asyncio.create_task(url_quick(UrlQuickRequest(url=link)))
+        for link in req.links[:50]
+    }
+    link_results: dict[str, Any] = {}
+    for link, task in link_tasks.items():
+        try:
+            link_results[link] = await task
+        except Exception:
+            link_results[link] = {"verdict": "UNKNOWN", "risk_score": 0}
+
+    dangerous_links   = [u for u, r in link_results.items() if r.get("verdict") == "DANGEROUS"]
+    suspicious_links  = [u for u, r in link_results.items() if r.get("verdict") == "SUSPICIOUS"]
+    password_forms    = [f for f in req.forms if f.get("type") == "password"]
+
+    # Aggregate score
+    llm_score = llm_data.get("risk_score", 0) if not llm_data.get("error") else 0
+    agg = min(100, int(
+        len(dangerous_links) * 30
+        + len(suspicious_links) * 10
+        + len(password_forms) * 20
+        + llm_score * 0.4
+    ))
+    if agg >= 65:
+        verdict = "DANGEROUS"
+    elif agg >= 30:
+        verdict = "SUSPICIOUS"
+    else:
+        verdict = llm_data.get("verdict", "SAFE") if llm_data and not llm_data.get("error") else "SAFE"
+
+    return {
+        "verdict":    verdict,
+        "risk_score": agg,
+        "summary":    llm_data.get("summary", ""),
+        "llm": {
+            "verdict":    llm_data.get("verdict"),
+            "risk_score": llm_score,
+            "red_flags":  llm_data.get("red_flags", []),
+        },
+        "links": {
+            "total":     len(req.links),
+            "checked":   len(link_results),
+            "dangerous": dangerous_links,
+            "suspicious": suspicious_links,
+        },
+        "forms": {
+            "total":          len(req.forms),
+            "password_fields": len(password_forms),
+            "suspicious":     password_forms,
+        },
+    }
 
 
 if __name__ == "__main__":

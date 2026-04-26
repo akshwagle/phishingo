@@ -2,7 +2,7 @@
 import { useEffect, useState } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
-import { Check, Shield, Upload, Zap, Lock, Activity, Clock } from 'lucide-react'
+import { Check, Shield, Upload, Zap, Lock, Activity, Clock, Download } from 'lucide-react'
 import { DashboardResponse, LLM_MODELS, analyzeContent, getDashboard } from '@/lib/api'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -116,15 +116,20 @@ export default function HomePage() {
       <header className="h-14 bg-[#fffefb] border-b-2 border-[#1a1a1a]"
         style={{ boxShadow: '0 2px 0 #1a1a1a' }}>
         <div className="mx-auto max-w-5xl h-full px-4 flex items-center justify-between">
-          <div className="flex items-center gap-2.5">
+          <Link href="/" className="flex items-center gap-2.5 no-underline">
             <div className="h-8 w-8 rounded-xl border-2 border-[#1a1a1a] bg-[#4f46e5] flex items-center justify-center"
               style={{ boxShadow: '2px 2px 0 #1a1a1a' }}>
               <Shield className="h-4 w-4 text-white" />
             </div>
-            <span className="text-[16px] font-bold">
+            <span className="text-[16px] font-bold text-[#1a1a1a]">
               PhishFilter <span className="text-[#4f46e5]">Pro</span>
             </span>
-          </div>
+          </Link>
+          <nav className="hidden sm:flex items-center gap-5 text-[11px] font-bold">
+            <Link href="/" className="text-[#4f46e5] border-b-2 border-[#4f46e5] pb-0.5 no-underline">Scanner</Link>
+            <Link href="/features" className="text-[#5a5a5a] hover:text-[#4f46e5] no-underline transition-colors">Features</Link>
+            <Link href="/extension" className="text-[#5a5a5a] hover:text-[#4f46e5] no-underline transition-colors">Extension</Link>
+          </nav>
           <div className="flex items-center gap-2 text-[11px] text-[#5a5a5a]">
             <span className="h-2 w-2 rounded-full bg-[#16a34a]" />
             <span className="hidden sm:inline">All engines online</span>
@@ -289,12 +294,14 @@ export default function HomePage() {
               <p className="mt-1.5 text-[12px] leading-relaxed" style={{ color: 'rgba(255,255,255,0.75)' }}>
                 Install the Chrome extension for live Gmail scanning, link hover preview, and automatic blocking when entering credentials on phish sites.
               </p>
-              <button
-                className="clay-btn mt-4 px-4 py-2 text-[12px] font-bold"
+              <Link
+                href="/extension"
+                className="clay-btn mt-4 px-4 py-2 text-[12px] font-bold inline-flex items-center gap-1.5 no-underline"
                 style={{ background: '#ffffff', color: '#4f46e5', borderColor: '#ffffff' }}
               >
-                Coming soon
-              </button>
+                <Download className="h-3.5 w-3.5" />
+                Get the extension
+              </Link>
             </div>
           </div>
         </section>

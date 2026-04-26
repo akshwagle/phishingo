@@ -23,16 +23,21 @@ export default function FeaturesPage() {
       <header className="h-14 bg-[#fffefb] border-b-2 border-[#1a1a1a]"
         style={{ boxShadow: '0 2px 0 #1a1a1a' }}>
         <div className="mx-auto flex h-full max-w-5xl items-center justify-between px-4">
-          <div className="flex items-center gap-2.5">
+          <Link href="/" className="flex items-center gap-2.5 no-underline">
             <div className="h-8 w-8 rounded-xl border-2 border-[#1a1a1a] bg-[#4f46e5] flex items-center justify-center"
               style={{ boxShadow: '2px 2px 0 #1a1a1a' }}>
               <Shield className="h-4 w-4 text-white" />
             </div>
-            <span className="text-[16px] font-bold">
+            <span className="text-[16px] font-bold text-[#1a1a1a]">
               PhishFilter <span className="text-[#4f46e5]">Pro</span>
             </span>
-          </div>
-          <Link href="/" className="clay-btn bg-[#b3c8ff] text-[#1a1a1a] px-3 py-2 text-[11px]">
+          </Link>
+          <nav className="hidden sm:flex items-center gap-5 text-[11px] font-bold">
+            <Link href="/" className="text-[#5a5a5a] hover:text-[#4f46e5] no-underline transition-colors">Scanner</Link>
+            <Link href="/features" className="text-[#4f46e5] border-b-2 border-[#4f46e5] pb-0.5 no-underline">Features</Link>
+            <Link href="/extension" className="text-[#5a5a5a] hover:text-[#4f46e5] no-underline transition-colors">Extension</Link>
+          </nav>
+          <Link href="/" className="clay-btn bg-[#b3c8ff] text-[#1a1a1a] px-3 py-2 text-[11px] hidden sm:inline-flex">
             Back to scanner
           </Link>
         </div>
