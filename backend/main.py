@@ -793,6 +793,31 @@ async def url_quick(req: UrlQuickRequest) -> dict[str, Any]:
         "cached":            False,
     }
     _url_quick_cache[url] = {"result": result, "expires_at": time.time() + _URL_QUICK_TTL}
+
+    # Persist suspicious/dangerous quick checks to MongoDB so the dashboard sees them
+    if verdict != "SAFE":
+        col = _get_col()
+        if col is not None:
+            try:
+                import datetime as _dt
+                await col.update_one(
+                    {"job_id": f"quick_{abs(hash(url)) % 10**9}"},
+                    {"$set": {
+                        "job_id":            f"quick_{abs(hash(url)) % 10**9}",
+                        "verdict":           verdict,
+                        "score":             risk,
+                        "input_type":        "url",
+                        "description":       url[:120],
+                        "brand_impersonated": brand,
+                        "sources_flagged":   list(set(sources)),
+                        "created_at":        _dt.datetime.utcnow(),
+                        "scan_duration_s":   0.3,
+                    }},
+                    upsert=True,
+                )
+            except Exception as exc:
+                logger.warning("MongoDB url_quick persist error: %s", exc)
+
     return result
 
 
